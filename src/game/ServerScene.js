@@ -41,8 +41,20 @@ export default class ServerScene extends Scene {
 			wall.player.lives = Math.max(0, wall.player.lives - 1);
 
 			const scoredOnPlayer = wall.player;
+			const scorer = [...this.state.players.values()].find(
+				(player) => player !== scoredOnPlayer
+			);
+			if (scorer) {
+				this.#socket.broadcast({
+					type: 'goalScored',
+					scorer: scorer.username,
+					goalExplosionKey: scorer.goalExplosionKey,
+					position: [...ball.x]
+				});
+			}
+
 			if (wall.player.lives > 0) {
-				this.#startServe(scoredOnPlayer);
+				this.#startServe(scoredOnPlayer, false, scorer);
 				return;
 			}
 
@@ -146,7 +158,7 @@ export default class ServerScene extends Scene {
 		if (this.hostUser === null) this.hostUser = username;
 
 		this.#updatePaddles();
-		this.#loadPlayerElo(thisPlayer);
+		this.#loadPlayerProfile(thisPlayer);
 	}
 
 	#onDisconnect(username) {
@@ -184,6 +196,9 @@ export default class ServerScene extends Scene {
 						key: paddle.key,
 						username: username,
 						elo: player.elo,
+						ballSkinKey: player.ballSkinKey,
+						paddleSkinKey: player.paddleSkinKey,
+						goalExplosionKey: player.goalExplosionKey,
 						remote: thisUsername !== username,
 						pos: [...paddle.body.x.data]
 					};
@@ -200,14 +215,20 @@ export default class ServerScene extends Scene {
 		});
 	}
 
-	async #loadPlayerElo(player) {
+	async #loadPlayerProfile(player) {
 		try {
 			const row = await new Promise((resolve, reject) => {
 				db.get(
-					`SELECT u.elo, b.item_key AS ball_skin_key
+					`SELECT
+						 u.elo,
+						 p.item_key AS paddle_skin_key,
+						 b.item_key AS ball_skin_key,
+						 g.item_key AS goal_explosion_key
 						 FROM users u
 						 LEFT JOIN user_equipped ue ON ue.user_id = u.id
+						 LEFT JOIN items p ON p.id = ue.paddle_skin_item_id
 						 LEFT JOIN items b ON b.id = ue.ball_skin_item_id
+						 LEFT JOIN items g ON g.id = ue.goal_explosion_item_id
 						 WHERE u.display_name = ? LIMIT 1`,
 					[player.username],
 					(err, result) => {
@@ -222,15 +243,25 @@ export default class ServerScene extends Scene {
 			const elo = Number(row?.elo);
 			if (Number.isFinite(elo)) player.elo = elo;
 
+			const paddleSkinKey = Number(row?.paddle_skin_key);
+			if (Number.isFinite(paddleSkinKey)) {
+				player.paddleSkinKey = paddleSkinKey;
+			}
+
 			const ballSkinKey = Number(row?.ball_skin_key);
 			if (Number.isFinite(ballSkinKey)) {
 				player.ballSkinKey = ballSkinKey;
 				if (this.#servingPlayer === player) this.#ballSkinKey = ballSkinKey;
 			}
 
+			const goalExplosionKey = Number(row?.goal_explosion_key);
+			if (Number.isFinite(goalExplosionKey)) {
+				player.goalExplosionKey = goalExplosionKey;
+			}
+
 			this.#updatePaddles();
 		} catch (err) {
-			console.error(`Failed to load elo for ${player.username}:`, err);
+			console.error(`Failed to load profile for ${player.username}:`, err);
 		}
 	}
 
@@ -449,7 +480,7 @@ export default class ServerScene extends Scene {
 		}
 	}
 
-	#startServe(playerObj, initial = false) {
+	#startServe(playerObj, initial = false, scorer = null) {
 		this.#servingPlayer = playerObj;
 		this.#ballSkinKey = Number.isFinite(playerObj.ballSkinKey)
 			? playerObj.ballSkinKey
@@ -457,7 +488,7 @@ export default class ServerScene extends Scene {
 		this.#ball.setServer(playerObj);
 		this.#respawn = {
 			endAt: Date.now() + RESPAWN_COUNTDOWN_MS,
-			scorer: initial ? null : playerObj.username
+			scorer: initial ? null : (scorer?.username ?? null)
 		};
 	}
 }

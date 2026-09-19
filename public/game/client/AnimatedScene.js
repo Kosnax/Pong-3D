@@ -84,6 +84,7 @@ export class AnimatedScene extends Scene {
 
 		socket.addHandler('sync', this.#sync.bind(this));
 		socket.addHandler('gameOver', this.#gameOver.bind(this));
+		socket.addHandler('goalScored', this.#goalScored.bind(this));
 		socket.addHandler('playerSync', this.#playerSync.bind(this));
 		socket.addHandler('itemUnlocked', this.#itemUnlocked.bind(this));
 		socket.addHandler('gameCancelled', this.#gameCancelled.bind(this));
@@ -308,6 +309,10 @@ export class AnimatedScene extends Scene {
 		this.#ball.enabled = false;
 	}
 
+	#goalScored(msg) {
+		this.#ball.triggerGoalExplosion(msg.goalExplosionKey, msg.position);
+	}
+
 	get isHost() {
 		return this.host === this.username;
 	}
@@ -336,8 +341,16 @@ export class AnimatedScene extends Scene {
 
 			this.state.players.set(
 				player.username,
-				new Player(player.username, paddle, player.elo)
+				new Player(
+					player.username,
+					paddle,
+					player.elo,
+					player.ballSkinKey,
+					player.paddleSkinKey,
+					player.goalExplosionKey
+				)
 			);
+			paddle.setSkinStyle(player.paddleSkinKey);
 
 			const socket = this.getGameObject('socket').config.socket;
 
