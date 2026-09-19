@@ -80,6 +80,12 @@ export class PaddleController {
 		return this.getDirectionAtTick(this.#simulationTick);
 	}
 
+	reset(tick = this.#simulationTick) {
+		this.#lastReceivedSeq = -1;
+		this.#inputs = [{ tick, seq: -1, direction: new Vec3() }];
+		this.ack = -1;
+	}
+
 	/**
 	 * Retain one baseline input plus all states inside the rollback window.
 	 */

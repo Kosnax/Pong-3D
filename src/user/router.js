@@ -126,6 +126,12 @@ export default function createUserRouter() {
 					[newName, userId],
 					function (updateErr) {
 						if (updateErr) {
+							if (updateErr.code === 'SQLITE_CONSTRAINT') {
+								return res.status(409).json({
+									ok: false,
+									message: 'Display name is already in use'
+								});
+							}
 							console.error(
 								'Failed to update display name:',
 								updateErr.message

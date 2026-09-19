@@ -101,6 +101,14 @@ db.serialize(() => {
 
 	db.run('CREATE INDEX IF NOT EXISTS idx_items_kind ON items(kind);');
 	db.run(
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_display_name
+		 ON users(display_name) WHERE display_name IS NOT NULL`,
+		(err) => {
+			if (err)
+				console.error('Display-name uniqueness migration failed:', err.message);
+		}
+	);
+	db.run(
 		'CREATE INDEX IF NOT EXISTS idx_user_unlocks_user_id ON user_unlocks(user_id);'
 	);
 

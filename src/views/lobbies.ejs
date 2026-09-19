@@ -144,21 +144,20 @@
 				});
 
 			randomLobbyButton.addEventListener('click', async (e) => {
+				randomLobbyButton.disabled = true;
 				try {
 					setLobbyStatus('Finding an open match...');
-					const res = await fetch('/api/lobbies', { cache: 'no-store' });
+					const res = await fetch('/api/matchmaking', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' }
+					});
 					if (!res.ok) throw new Error('Matchmaking is temporarily unavailable.');
-					const { lobbies = [] } = await res.json();
-
-					if (lobbies.length) {
-						const randomLobby = lobbies[Math.floor(Math.random() * lobbies.length)];
-						join(randomLobby.code);
-						return;
-					}
-
-					await createLobbyAndRedirect(true);
+					const { lobby } = await res.json();
+					if (!lobby?.code) throw new Error('No playable lobby was returned.');
+					join(lobby.code);
 				} catch (error) {
 					setLobbyStatus(error.message || 'Matchmaking failed.', true);
+					randomLobbyButton.disabled = false;
 				}
 			});
 
@@ -194,10 +193,10 @@
 									<li class="lobby">
 										<div>
 										<div><strong>${escapeHtml(lobby.name)} (${escapeHtml(lobby.code)})</strong></div>
-											<div>Players: ${lobby.memberCount}</div>
+											<div>Players: ${lobby.playerCount}/2 · Spectators: ${lobby.spectatorCount}</div>
 										</div>
 
-										<button onclick="join('${lobby.code}')">${(lobby.memberCount >= 2) ? "Spectate" : "Join" }</button>
+										<button onclick="join('${lobby.code}')">${lobby.joinableAsPlayer ? "Join" : "Spectate"}</button>
 									</li>
 								`).join('\n')
 							}</ul>`;

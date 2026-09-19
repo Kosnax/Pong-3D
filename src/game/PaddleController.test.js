@@ -48,4 +48,17 @@ describe('PaddleController', () => {
 			controller.insertInput({ seq: 6, direction: input.direction }, 11)
 		).toBe(false);
 	});
+
+	test('accepts a fresh sequence after a reconnect or rematch reset', () => {
+		const controller = new PaddleController();
+		controller.enqueueInput({ seq: 50, direction: [0, 1, 0] }, 10);
+
+		controller.reset(20);
+
+		expect(controller.ack).toBe(-1);
+		expect(controller.enqueueInput({ seq: 0, direction: [0, -1, 0] }, 20)).toBe(
+			true
+		);
+		expect(controller.ack).toBe(0);
+	});
 });

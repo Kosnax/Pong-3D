@@ -4,9 +4,10 @@ import LobbyState from './lobbyState.js';
 export default function createLobbyRouter(server, parseSession) {
 	const router = Router();
 	const lobbyState = new LobbyState(server, parseSession);
-	setInterval(() => {
+	const cleanupInterval = setInterval(() => {
 		lobbyState.cleanup();
 	}, 5000);
+	cleanupInterval.unref?.();
 
 	router.get('/api/lobbies', (_req, res) => {
 		res.json({ lobbies: lobbyState.listLobbies() });
@@ -28,9 +29,23 @@ export default function createLobbyRouter(server, parseSession) {
 			});
 		}
 		const isPublic = req.body?.isPublic === true;
-		const lobby = lobbyState.createLobby(name, isPublic, lives);
+		const lobby = lobbyState.createLobby(name, isPublic, lives, req.user);
 
-		res.json({ lobby });
+		res.json({ lobby: lobbyState.serializeLobby(lobby) });
+	});
+
+	router.post('/api/matchmaking', (req, res) => {
+		if (!req.user) return res.sendStatus(401);
+		let lobby = lobbyState.findJoinableLobby(req.user.id);
+		if (!lobby) {
+			lobby = lobbyState.createLobby(
+				`${req.user.display_name}’s match`,
+				true,
+				7,
+				req.user
+			);
+		}
+		res.json({ lobby: lobbyState.serializeLobby(lobby) });
 	});
 
 	router.get('/api/lobbies/:lobbyId', (req, res) => {
@@ -45,11 +60,7 @@ export default function createLobbyRouter(server, parseSession) {
 		res.json({
 			ok: true,
 			lobby: {
-				lobbyId: lobby.lobbyId,
-				name: lobby.name,
-				hostUser: lobby.hostUser,
-				isPublic: lobby.isPublic,
-				memberCount: lobby.members.size,
+				...lobbyState.serializeLobby(lobby),
 				members: Array.from(lobby.members.values())
 			}
 		});
@@ -71,12 +82,10 @@ export default function createLobbyRouter(server, parseSession) {
 			return res.status(404).send('Lobby not found');
 		}
 
-		const username = req.user.display_name;
-		if (lobby.members.get(username)) {
-			return res.status(400).send('Username is taken');
-		}
-
-		res.render('game', { code, lobbyName: lobby.name, username });
+		res.render('game', {
+			code: lobby.code,
+			lobbyName: lobby.name
+		});
 	});
 
 	router.get('/', (req, res) => {

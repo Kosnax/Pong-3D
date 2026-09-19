@@ -21,7 +21,7 @@
 	<body>
 		<div id="chat">
 			<pre id="chat__text"></pre>
-			<input id="chat__box" placeholder="Chat (press Enter)" />
+			<input id="chat__box" maxlength="280" placeholder="Chat (press Enter)" />
 		</div>
 
 		<div id="waiting">
@@ -30,6 +30,7 @@
 				<p id="waiting__code"><strong>Join code:</strong> <%= code %></p>
 				<div id="waiting__players"></div>
 				<div id="waiting__scoreboard" style="display: none"></div>
+				<button id="readyButton" class="game-button" style="display: none">Ready</button>
 				<button id="startButton" class="game-button" disabled>Start Game</button>
 				<button id="waiting__leaveButton" class="game-button game-button--danger" style="display: none">
 					Leave Lobby

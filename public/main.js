@@ -74,6 +74,12 @@ function getRespawnCountdownSeconds() {
 	return Math.ceil(msRemaining / 1000);
 }
 
+function getReconnectCountdownSeconds() {
+	const expiresAt = animatedScene.reconnectStatus?.expiresAt;
+	if (!Number.isFinite(expiresAt)) return null;
+	return Math.max(0, Math.ceil((expiresAt - animatedScene.serverNowMs) / 1000));
+}
+
 animatedScene.registerGameObject(new GameObjectCustom('socket', { socket }));
 
 animatedScene.registerGameObject(
@@ -115,7 +121,7 @@ animatedScene.registerGameObject(
 			const players = [...animatedScene.state.players.values()];
 			if (players.length >= 2) {
 				const localIndex = players.findIndex(
-					(player) => player.username === animatedScene.username
+					(player) => player.userId === animatedScene.userId
 				);
 				if (localIndex > 0) {
 					const [localPlayer] = players.splice(localIndex, 1);
@@ -186,6 +192,26 @@ animatedScene.registerGameObject(
 					: `${this.socket.lastLatencyMs.toFixed(0)} ms`;
 			const fpsText = dt > 0 ? `${(1 / dt).toFixed(0)}` : '--';
 			this.self.textContent = `FPS: ${fpsText}   Ping: ${pingText}`;
+		}
+	}),
+	new GameObjectCustom('reconnectBanner', {
+		self: document.createElement('div'),
+		init() {
+			this.self.id = 'hud-reconnect';
+			this.self.classList.add('hud-overlay');
+			this.self.setAttribute('role', 'status');
+			this.self.setAttribute('aria-live', 'polite');
+			document.body.appendChild(this.self);
+		},
+		update() {
+			const status = animatedScene.reconnectStatus;
+			const seconds = getReconnectCountdownSeconds();
+			if (!status || seconds === null || seconds <= 0) {
+				this.self.style.display = 'none';
+				return;
+			}
+			this.self.style.display = '';
+			this.self.textContent = `${status.username} disconnected — waiting ${seconds}s to reconnect`;
 		}
 	}),
 	new GameObjectCustom('escapeMenu', {
@@ -302,7 +328,7 @@ animatedScene.registerGameObject(
 				animatedScene.matchStarted &&
 				animatedScene.gameOver === null &&
 				animatedScene.state.players.size >= 2 &&
-				!animatedScene.state.players.has(animatedScene.username);
+				!animatedScene.state.players.has(animatedScene.userId);
 			this.self.style.display = isSpectator ? '' : 'none';
 		}
 	}),
@@ -312,12 +338,23 @@ animatedScene.registerGameObject(
 		scoreboardDisplay: document.getElementById('waiting__scoreboard'),
 		joinCodeDisplay: document.getElementById('waiting__code'),
 		startButton: document.getElementById('startButton'),
+		readyButton: document.getElementById('readyButton'),
 		leaveLobbyButton: document.getElementById('waiting__leaveButton'),
 		players: animatedScene.state.players,
 		socket,
 		init() {
 			this.startButton.addEventListener('click', () => {
 				socket.send({ type: 'start' });
+			});
+
+			this.readyButton.addEventListener('click', () => {
+				const player = this.players.get(animatedScene.userId);
+				if (!player) return;
+				if (animatedScene.gameOver) {
+					socket.send({ type: 'rematch', ready: !player.rematchReady });
+				} else {
+					socket.send({ type: 'ready', ready: !player.ready });
+				}
 			});
 
 			this.leaveLobbyButton.addEventListener('click', async () => {
@@ -333,7 +370,7 @@ animatedScene.registerGameObject(
 
 			this.component.style.display = 'flex';
 			if (isGameOver) {
-				const { winner, ratings } = animatedScene.gameOver;
+				const { winner, winnerId, ratings } = animatedScene.gameOver;
 
 				document.getElementById('waiting__title').innerText = `${
 					winner ?? 'A player'
@@ -342,6 +379,11 @@ animatedScene.registerGameObject(
 				this.joinCodeDisplay.style.display = 'none';
 				this.playerListDisplay.style.display = 'none';
 				this.startButton.style.display = 'none';
+				const localPlayer = this.players.get(animatedScene.userId);
+				this.readyButton.style.display = localPlayer ? 'block' : 'none';
+				this.readyButton.textContent = localPlayer?.rematchReady
+					? 'Rematch Requested — Waiting for Opponent'
+					: 'Request Rematch';
 				this.leaveLobbyButton.style.display = 'block';
 				this.scoreboardDisplay.style.display = 'block';
 
@@ -356,17 +398,18 @@ animatedScene.registerGameObject(
 							</tr>
 						</thead>
 						<tbody>
-							${Array.from(this.players.keys())
-								.map((name) => {
-									const rating = ratings?.[name];
-									const finalLives = animatedScene.gameOver.finalLives?.[name];
+							${Array.from(this.players.entries())
+								.map(([userId, player]) => {
+									const rating = ratings?.[userId];
+									const finalLives =
+										animatedScene.gameOver.finalLives?.[userId];
 									const ratingCells = rating
 										? `<td>${rating.before}</td>
 	<td style="color: ${rating.change >= 0 ? 'lightgreen' : 'red'}">${rating.after} (${rating.change >= 0 ? '+' : ''}${rating.change})</td>`
 										: '<td>—</td><td>—</td>';
 									return `<tr>
-	<td>${escapeHtml(name)}</td>
-	<td>${finalLives ?? this.players.get(name).lives}${name === winner ? ' (Winner)' : ''}</td>
+	<td>${escapeHtml(player.username)}</td>
+	<td>${finalLives ?? player.lives}${userId === winnerId ? ' (Winner)' : ''}</td>
 	${ratingCells}
 </tr>`;
 								})
@@ -381,6 +424,7 @@ animatedScene.registerGameObject(
 				this.joinCodeDisplay.style.display = 'none';
 				this.playerListDisplay.style.display = 'none';
 				this.startButton.style.display = 'none';
+				this.readyButton.style.display = 'none';
 				this.leaveLobbyButton.style.display = 'block';
 				this.scoreboardDisplay.style.display = 'none';
 
@@ -395,21 +439,33 @@ animatedScene.registerGameObject(
 			this.joinCodeDisplay.style.display = 'block';
 			this.playerListDisplay.style.display = 'block';
 			this.startButton.style.display = 'block';
+			const localPlayer = this.players.get(animatedScene.userId);
+			this.readyButton.style.display = localPlayer ? 'block' : 'none';
+			this.readyButton.textContent = localPlayer?.ready ? 'Ready ✓' : 'Ready';
 			this.leaveLobbyButton.style.display = 'none';
 			this.scoreboardDisplay.style.display = 'none';
 			this.playerListDisplay.innerHTML = Array.from(this.players.entries())
-				.map(([name, player]) => {
-					const isHost = name === animatedScene.host;
+				.map(([userId, player]) => {
+					const isHost = userId === animatedScene.hostUserId;
 					const elo = player.elo;
+					const state = !player.connected
+						? 'reconnecting'
+						: player.ready
+							? 'ready'
+							: 'not ready';
 					return `<span style="color: ${isHost ? 'yellow' : 'white'}">
-						${escapeHtml(name)} (${escapeHtml(elo)})
+						${escapeHtml(player.username)} (${escapeHtml(elo)}) — ${state}
 					</span>`;
 				})
 				.join('');
 
 			if (animatedScene.isHost) {
 				this.startButton.textContent = 'Start Game';
-				this.startButton.disabled = this.players.size < 2;
+				this.startButton.disabled =
+					this.players.size < 2 ||
+					[...this.players.values()].some(
+						(player) => !player.connected || !player.ready
+					);
 			} else {
 				this.startButton.textContent = 'Waiting for host to start the game';
 				this.startButton.disabled = true;

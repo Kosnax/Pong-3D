@@ -2,13 +2,13 @@ import EventEmitter from 'node:events';
 import { jest } from '@jest/globals';
 
 const profiles = {
-	playerA: {
+	101: {
 		elo: 1100,
 		paddle_skin_key: 1,
 		ball_skin_key: 2,
 		goal_explosion_key: 4
 	},
-	playerB: {
+	102: {
 		elo: 1200,
 		paddle_skin_key: 2,
 		ball_skin_key: 1,
@@ -18,20 +18,29 @@ const profiles = {
 
 jest.unstable_mockModule('../db/db.js', () => ({
 	default: {
-		get: jest.fn((_sql, params, callback) => {
+		get: jest.fn((sql, params, callback) => {
+			if (sql.includes('SELECT i.id')) return callback(null, null);
 			callback(null, profiles[params[0]]);
+		}),
+		run: jest.fn((_sql, params, callback) => {
+			if (typeof params === 'function') params(null);
+			else callback?.(null);
 		})
 	}
 }));
 
 let ServerScene;
+let FORFEIT_RESULT_DISPLAY_MS;
 let MAX_ROLLBACK_TICKS;
+let RECONNECT_GRACE_MS;
 let getRollbackTicks;
 
 beforeAll(async () => {
 	({
 		default: ServerScene,
+		FORFEIT_RESULT_DISPLAY_MS,
 		MAX_ROLLBACK_TICKS,
+		RECONNECT_GRACE_MS,
 		getRollbackTicks
 	} = await import('./ServerScene.js'));
 });
@@ -46,51 +55,168 @@ class FakeSocket extends EventEmitter {
 		this.rttByUsername = new Map();
 	}
 
-	connect(username) {
-		const ws = { username };
-		this.clients.set(username, ws);
-		this.emit('client:connect', username);
+	connect(userId, displayName) {
+		const ws = { userId, username: displayName };
+		this.clients.set(userId, ws);
+		this.emit('client:connect', userId, { userId, displayName });
+	}
+
+	disconnect(userId) {
+		const ws = this.clients.get(userId);
+		if (!ws) return;
+		this.clients.delete(userId);
+		this.emit('client:disconnect', userId, {
+			userId,
+			displayName: ws.username
+		});
 	}
 
 	addHandler(type, handler) {
 		this.handlers.set(type, handler);
 	}
 
-	receive(username, type, message = {}) {
-		const ws = this.clients.get(username);
-		return this.handlers.get(type)?.(this, username, ws, {
+	receive(userId, type, message = {}) {
+		const ws = this.clients.get(userId);
+		return this.handlers.get(type)?.(this, userId, ws, {
 			type,
 			...message
 		});
 	}
 
 	forEachClient(callback) {
-		for (const [username, ws] of this.clients) callback(username, ws);
+		for (const [userId, ws] of this.clients) callback(userId, ws);
 	}
 
 	safeSend(ws, message) {
+		if (!ws) return false;
 		this.sent.push({ username: ws.username, message });
+		return true;
+	}
+
+	safeSendToUser(userId, message) {
+		return this.safeSend(this.clients.get(userId), message);
 	}
 
 	broadcast(message) {
 		this.broadcasts.push(message);
 	}
 
-	getRttMs(username) {
-		return this.rttByUsername.get(username) ?? null;
+	getRttMs(userId) {
+		return this.rttByUsername.get(userId) ?? null;
 	}
 
-	getUserId(username) {
-		return username === 'playerA' ? 101 : 102;
+	isConnected(userId) {
+		return this.clients.has(userId);
 	}
 }
 
 async function connectPlayers(sceneSocket) {
-	sceneSocket.connect('playerA');
+	sceneSocket.connect('101', 'playerA');
 	await new Promise(setImmediate);
-	sceneSocket.connect('playerB');
+	sceneSocket.connect('102', 'playerB');
 	await new Promise(setImmediate);
+	sceneSocket.receive('101', 'ready', { ready: true });
+	sceneSocket.receive('102', 'ready', { ready: true });
 }
+
+describe('ServerScene online lifecycle', () => {
+	test('requires both connected players to be ready before the host starts', async () => {
+		const socket = new FakeSocket();
+		const scene = new ServerScene(socket, 7, null, { hostUserId: '101' });
+		try {
+			socket.connect('101', 'playerA');
+			socket.connect('102', 'playerB');
+			await new Promise(setImmediate);
+			socket.receive('101', 'move', { seq: 50, direction: [0, 1, 0] });
+
+			expect(socket.receive('101', 'start')).toEqual({
+				type: 'error',
+				message: 'Both players must be connected and ready'
+			});
+			socket.receive('101', 'ready', { ready: true });
+			socket.receive('102', 'ready', { ready: true });
+			expect(socket.receive('101', 'start')).toBeUndefined();
+			expect(scene.inProgress).toBe(true);
+			scene.stop();
+			socket.receive('101', 'move', { seq: 0, direction: [0, -1, 0] });
+			scene.advanceTick();
+			expect(scene.state.players.get('101').paddle.controller.ack).toBe(0);
+		} finally {
+			scene.stop();
+		}
+	});
+
+	test('pauses during the reconnect grace period and resumes the same player', async () => {
+		const socket = new FakeSocket();
+		const scene = new ServerScene(socket, 7, null, { hostUserId: '101' });
+		try {
+			await connectPlayers(socket);
+			socket.receive('101', 'start');
+			scene.stop();
+
+			const tickBeforeDisconnect = scene.serverTick;
+			socket.disconnect('102');
+			scene.advanceTick();
+
+			expect(scene.inProgress).toBe(true);
+			expect(scene.serverTick).toBe(tickBeforeDisconnect);
+			expect(socket.broadcasts).toContainEqual(
+				expect.objectContaining({
+					type: 'reconnectStatus',
+					userId: '102'
+				})
+			);
+			expect(
+				socket.broadcasts.some((message) => message.type === 'gameOver')
+			).toBe(false);
+
+			socket.connect('102', 'playerB renamed');
+			socket.receive('102', 'move', {
+				seq: 0,
+				direction: [0, 1, 0]
+			});
+			scene.advanceTick();
+			expect(scene.serverTick).toBe(tickBeforeDisconnect + 1);
+			expect(scene.state.players.get('102').username).toBe('playerB renamed');
+			expect(scene.state.players.get('102').paddle.controller.ack).toBe(0);
+			expect(socket.broadcasts).toContainEqual({
+				type: 'playerReconnected',
+				userId: '102'
+			});
+		} finally {
+			scene.stop();
+		}
+	});
+
+	test('forfeits after grace and reopens the player slot', async () => {
+		const socket = new FakeSocket();
+		const scene = new ServerScene(socket, 7, null, { hostUserId: '101' });
+		try {
+			await connectPlayers(socket);
+			socket.receive('101', 'start');
+			scene.stop();
+			jest.useFakeTimers();
+
+			socket.disconnect('102');
+			jest.advanceTimersByTime(RECONNECT_GRACE_MS - 1);
+			expect(scene.inProgress).toBe(true);
+
+			jest.advanceTimersByTime(1);
+			expect(scene.status).toBe('finished');
+			for (let i = 0; i < 12; i++) await Promise.resolve();
+			expect(socket.broadcasts).toContainEqual(
+				expect.objectContaining({ type: 'gameOver', loserId: '102' })
+			);
+
+			jest.advanceTimersByTime(FORFEIT_RESULT_DISPLAY_MS);
+			expect(scene.hasPlayer('102')).toBe(false);
+			expect(scene.status).toBe('waiting');
+		} finally {
+			jest.useRealTimers();
+			scene.stop();
+		}
+	});
+});
 
 describe('ServerScene cosmetics', () => {
 	test('includes every player paddle skin in playerSync', async () => {
@@ -131,11 +257,11 @@ describe('ServerScene cosmetics', () => {
 
 		expect(scene.goalPending).toBe(true);
 		expect(socket.broadcasts).toHaveLength(0);
-		expect(scene.state.players.get('playerA').lives).toBe(7);
+		expect(scene.state.players.get('101').lives).toBe(7);
 
 		for (let i = 0; i < MAX_ROLLBACK_TICKS + 1; i++) scene.advanceTick();
 		expect(socket.broadcasts).toHaveLength(0);
-		expect(scene.state.players.get('playerA').lives).toBe(7);
+		expect(scene.state.players.get('101').lives).toBe(7);
 		scene.advanceTick();
 
 		expect(socket.broadcasts.at(-1)).toEqual({
@@ -147,7 +273,7 @@ describe('ServerScene cosmetics', () => {
 		expect(
 			socket.broadcasts.filter((message) => message.type === 'goalScored')
 		).toHaveLength(1);
-		expect(scene.state.players.get('playerA').lives).toBe(6);
+		expect(scene.state.players.get('101').lives).toBe(6);
 		expect(scene.goalPending).toBe(false);
 	});
 
@@ -171,11 +297,12 @@ describe('ServerScene cosmetics', () => {
 	test('includes authoritative final lives in the game-over event', async () => {
 		const now = jest.spyOn(Date, 'now').mockReturnValue(30_000);
 		const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+		let scene;
 		try {
 			const socket = new FakeSocket();
-			const scene = new ServerScene(socket, 1);
+			scene = new ServerScene(socket, 1);
 			await connectPlayers(socket);
-			socket.receive('playerA', 'start');
+			socket.receive('101', 'start');
 
 			now.mockReturnValue(33_001);
 			scene.advanceTick();
@@ -192,10 +319,20 @@ describe('ServerScene cosmetics', () => {
 				expect.objectContaining({
 					winner: 'playerB',
 					loser: 'playerA',
-					finalLives: { playerA: 0, playerB: 1 }
+					winnerId: '102',
+					finalLives: { 101: 0, 102: 1 }
 				})
 			);
+
+			socket.receive('101', 'rematch', { ready: true });
+			expect(scene.inProgress).toBe(false);
+			socket.receive('102', 'rematch', { ready: true });
+			expect(scene.inProgress).toBe(true);
+			expect(socket.broadcasts).toContainEqual({ type: 'matchReset' });
+			expect(scene.state.players.get('101').lives).toBe(1);
+			expect(scene.state.players.get('102').lives).toBe(1);
 		} finally {
+			scene?.stop();
 			warning.mockRestore();
 			now.mockRestore();
 		}
@@ -220,18 +357,18 @@ describe('ServerScene rollback', () => {
 			const socket = new FakeSocket();
 			const scene = new ServerScene(socket);
 			await connectPlayers(socket);
-			socket.receive('playerA', 'start');
+			socket.receive('101', 'start');
 			now.mockReturnValue(8_001);
 			scene.advanceTick();
 
-			socket.receive('playerA', 'move', {
+			socket.receive('101', 'move', {
 				seq: 1,
 				direction: [0, 1, 0]
 			});
 			scene.advanceTick();
 
 			expect(scene.rollbackStats.rollbacks).toBe(0);
-			expect(scene.state.players.get('playerA').paddle.controller.ack).toBe(1);
+			expect(scene.state.players.get('101').paddle.controller.ack).toBe(1);
 		} finally {
 			now.mockRestore();
 		}
@@ -243,14 +380,14 @@ describe('ServerScene rollback', () => {
 			const socket = new FakeSocket();
 			const scene = new ServerScene(socket);
 			await connectPlayers(socket);
-			socket.receive('playerA', 'start');
+			socket.receive('101', 'start');
 
 			// Finish the initial serve countdown without waiting in real time.
 			now.mockReturnValue(13_001);
 			scene.advanceTick();
 
 			const ball = scene.getGameObject('ball');
-			const paddle = scene.state.players.get('playerA').paddle;
+			const paddle = scene.state.players.get('101').paddle;
 			paddle.body.x.assign(-23.5 / 2.125, 0, 0);
 			paddle.body.v.zero();
 			ball.body.x.assign(-8.9338, 2.1, 0);
@@ -264,8 +401,8 @@ describe('ServerScene rollback', () => {
 			for (let i = 0; i < MAX_ROLLBACK_TICKS; i++) scene.advanceTick();
 
 			expect(scene.goalPending).toBe(true);
-			socket.rttByUsername.set('playerA', 300);
-			socket.receive('playerA', 'move', {
+			socket.rttByUsername.set('101', 300);
+			socket.receive('101', 'move', {
 				seq: 1,
 				direction: [0, 1, 0]
 			});
@@ -294,20 +431,20 @@ describe('ServerScene rollback', () => {
 			const socket = new FakeSocket();
 			const scene = new ServerScene(socket);
 			await connectPlayers(socket);
-			socket.receive('playerA', 'start');
+			socket.receive('101', 'start');
 			now.mockReturnValue(23_001);
 			scene.advanceTick();
 			for (let i = 0; i < MAX_ROLLBACK_TICKS; i++) scene.advanceTick();
 
-			socket.rttByUsername.set('playerA', 1000);
-			socket.receive('playerA', 'move', {
+			socket.rttByUsername.set('101', 1000);
+			socket.receive('101', 'move', {
 				seq: 1,
 				direction: [0, 1, 0]
 			});
 			scene.advanceTick();
 			const rollbackCount = scene.rollbackStats.rollbacks;
 
-			socket.receive('playerA', 'move', {
+			socket.receive('101', 'move', {
 				seq: 2,
 				direction: [0, 1, 0]
 			});

@@ -59,7 +59,8 @@ export default function setupAuth(app) {
 
 	return {
 		parseSession(req, cb) {
-			sessionParser(req, {}, () => {
+			sessionParser(req, {}, (sessionError) => {
+				if (sessionError) return cb(sessionError);
 				passportSessionParser(req, {}, cb);
 			});
 		}

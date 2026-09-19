@@ -2,6 +2,7 @@ import { PhysicsEngine } from '../../physics/engine.js';
 
 export class Player {
 	constructor(
+		userId,
 		username,
 		paddle,
 		elo = 1000,
@@ -9,6 +10,7 @@ export class Player {
 		paddleSkinKey = 0,
 		goalExplosionKey = 0
 	) {
+		this.userId = String(userId);
 		this.username = username;
 		this.lives = 7;
 		this.elo = elo;

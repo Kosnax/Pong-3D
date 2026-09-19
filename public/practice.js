@@ -79,10 +79,11 @@ scene.registerGameObject(
 );
 
 socket.emit('playerSync', {
-	username: 'You',
-	host: 'You',
+	userId: 'practice-you',
+	hostUserId: 'practice-you',
 	players: [
 		{
+			userId: 'practice-you',
 			key: 'paddle1',
 			username: 'You',
 			elo: 1000,
@@ -93,6 +94,7 @@ socket.emit('playerSync', {
 			pos: [-23.5 / 2.125, 0, 0]
 		},
 		{
+			userId: 'practice-bot',
 			key: 'paddle2',
 			username: 'Pong Bot',
 			elo: 1000,
@@ -106,8 +108,8 @@ socket.emit('playerSync', {
 });
 
 const ball = scene.getGameObject('ball');
-const you = scene.state.players.get('You');
-const bot = scene.state.players.get('Pong Bot');
+const you = scene.state.players.get('practice-you');
+const bot = scene.state.players.get('practice-bot');
 you.lives = 3;
 bot.lives = 3;
 bot.paddle.controller = new PracticeAIController(bot.paddle, ball);

@@ -24,9 +24,10 @@ export class AnimatedScene extends Scene {
 	constructor(socket) {
 		super(new GameState());
 
-		this.host = null;
-		this.username = null;
+		this.hostUserId = null;
+		this.userId = null;
 		this.gameOver = null;
+		this.reconnectStatus = null;
 		this.respawnEndsAt = null;
 		this.respawnScorer = null;
 		this.matchStarted = false;
@@ -97,6 +98,9 @@ export class AnimatedScene extends Scene {
 		socket.addHandler('playerSync', this.#playerSync.bind(this));
 		socket.addHandler('itemUnlocked', this.#itemUnlocked.bind(this));
 		socket.addHandler('gameCancelled', this.#gameCancelled.bind(this));
+		socket.addHandler('reconnectStatus', this.#reconnectStatus.bind(this));
+		socket.addHandler('playerReconnected', this.#playerReconnected.bind(this));
+		socket.addHandler('matchReset', this.#matchReset.bind(this));
 
 		// Order matters: Sync with ServerScene.js
 		this.registerGameObject(new Arena('gameArena'));
@@ -272,9 +276,9 @@ export class AnimatedScene extends Scene {
 
 	#sync(msg) {
 		const renderedPaddles = new Map();
-		for (const [username, player] of this.state.players) {
+		for (const [userId, player] of this.state.players) {
 			if (player.paddle.visual) {
-				renderedPaddles.set(username, player.paddle.visual.position.clone());
+				renderedPaddles.set(userId, player.paddle.visual.position.clone());
 			}
 		}
 		const renderedBallPosition = this.#ball.visual.position.clone();
@@ -298,13 +302,13 @@ export class AnimatedScene extends Scene {
 			this.serverNowMs
 		);
 
-		for (const [username, gameInfo] of Object.entries(msg.gameInfo)) {
-			const player = this.state.players.get(username);
+		for (const [userId, gameInfo] of Object.entries(msg.gameInfo)) {
+			const player = this.state.players.get(userId);
 			if (!player) continue;
 			player.lives = gameInfo.lives;
 		}
 
-		const player = this.state.players.get(this.username);
+		const player = this.state.players.get(this.userId);
 		const controller = player?.paddle.controller;
 
 		if (controller) {
@@ -371,9 +375,9 @@ export class AnimatedScene extends Scene {
 	}
 
 	#smoothRenderCorrections(renderedPaddles, renderedBallPosition) {
-		for (const [username, player] of this.state.players) {
+		for (const [userId, player] of this.state.players) {
 			player.paddle.smoothFromPosition(
-				renderedPaddles.get(username),
+				renderedPaddles.get(userId),
 				this.physicsAccumulator
 			);
 		}
@@ -387,8 +391,8 @@ export class AnimatedScene extends Scene {
 		this.gameOver = msg;
 		this.#applyFinalLives(msg.finalLives);
 		this.#ball.enabled = false;
-		const localPlayer = this.state.players.has(this.username);
-		this.audio?.playGameOver(localPlayer ? msg.winner === this.username : null);
+		const localPlayer = this.state.players.has(this.userId);
+		this.audio?.playGameOver(localPlayer ? msg.winnerId === this.userId : null);
 	}
 
 	#goalScored(msg) {
@@ -400,15 +404,15 @@ export class AnimatedScene extends Scene {
 
 	#applyFinalLives(finalLives) {
 		if (!finalLives || typeof finalLives !== 'object') return;
-		for (const [username, lives] of Object.entries(finalLives)) {
-			const player = this.state.players.get(username);
+		for (const [userId, lives] of Object.entries(finalLives)) {
+			const player = this.state.players.get(userId);
 			if (player && Number.isFinite(Number(lives)))
 				player.lives = Number(lives);
 		}
 	}
 
 	get isHost() {
-		return this.host === this.username;
+		return this.hostUserId === this.userId;
 	}
 
 	get enabled() {
@@ -420,8 +424,8 @@ export class AnimatedScene extends Scene {
 	}
 
 	#playerSync(msg) {
-		this.username = msg.username;
-		this.host = msg.host;
+		this.userId = String(msg.userId);
+		this.hostUserId = msg.hostUserId === null ? null : String(msg.hostUserId);
 
 		const cameraController = this.getGameObject('cameraController');
 		if (cameraController) cameraController.followTarget = null;
@@ -433,17 +437,20 @@ export class AnimatedScene extends Scene {
 			paddle.controller?.destroy?.();
 			paddle.controller = null;
 
-			this.state.players.set(
+			const userId = String(player.userId);
+			const gamePlayer = new Player(
+				userId,
 				player.username,
-				new Player(
-					player.username,
-					paddle,
-					player.elo,
-					player.ballSkinKey,
-					player.paddleSkinKey,
-					player.goalExplosionKey
-				)
+				paddle,
+				player.elo,
+				player.ballSkinKey,
+				player.paddleSkinKey,
+				player.goalExplosionKey
 			);
+			gamePlayer.connected = player.connected !== false;
+			gamePlayer.ready = player.ready === true;
+			gamePlayer.rematchReady = player.rematchReady === true;
+			this.state.players.set(userId, gamePlayer);
 			paddle.setSkinStyle(player.paddleSkinKey);
 
 			const socket = this.getGameObject('socket').config.socket;
@@ -506,5 +513,27 @@ export class AnimatedScene extends Scene {
 
 	#gameCancelled(msg) {
 		this.gameCancelled = true;
+	}
+
+	#reconnectStatus(msg) {
+		this.reconnectStatus = {
+			userId: String(msg.userId),
+			username: msg.username,
+			expiresAt: msg.expiresAt
+		};
+	}
+
+	#playerReconnected(msg) {
+		if (this.reconnectStatus?.userId === String(msg.userId)) {
+			this.reconnectStatus = null;
+		}
+	}
+
+	#matchReset() {
+		this.gameOver = null;
+		this.gameCancelled = false;
+		this.matchStarted = false;
+		this.reconnectStatus = null;
+		this.unlockedItem = null;
 	}
 }

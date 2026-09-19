@@ -118,7 +118,6 @@ export default class PongSocketClient {
 		const url = new URL(
 			`${scheme}://${location.host}/lobby/${locationUrl.searchParams.get('code')}`
 		);
-		url.searchParams.set('username', locationUrl.searchParams.get('username'));
 		return url.toString();
 	}
 

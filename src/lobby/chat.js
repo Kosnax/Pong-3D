@@ -1,6 +1,7 @@
-export default function chatHandler(socket, username, ws, msg) {
+export default function chatHandler(socket, userId, ws, msg) {
+	const displayName = socket.getUser(userId)?.displayName ?? 'Player';
 	socket.broadcast({
 		type: 'chat',
-		content: `[${username}] ${msg.content}`
+		content: `[${displayName}] ${msg.content}`
 	});
 }

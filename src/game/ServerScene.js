@@ -13,7 +13,8 @@ const RESPAWN_COUNTDOWN_MS = 3000;
 const DEFAULT_ELO = 1000;
 const FIXED_SIMULATION_STEP = 1 / Constants.SIMULATION_RATE;
 const FIXED_SIMULATION_STEP_MS = FIXED_SIMULATION_STEP * 1000;
-const MAX_SERVER_CATCHUP_STEPS = 8;
+export const RECONNECT_GRACE_MS = 15_000;
+export const FORFEIT_RESULT_DISPLAY_MS = 5_000;
 export const MAX_ROLLBACK_TICKS = Math.round(0.15 * Constants.SIMULATION_RATE);
 const ROLLBACK_HISTORY_STATES = MAX_ROLLBACK_TICKS + 2;
 
@@ -26,7 +27,8 @@ export function getRollbackTicks(rttMs) {
 }
 
 export default class ServerScene extends Scene {
-	#interval = null;
+	#scheduler = null;
+	#running = false;
 	#socket = null;
 	#ball = null;
 	#gameOver = null;
@@ -44,6 +46,13 @@ export default class ServerScene extends Scene {
 	#history = new RollbackBuffer(ROLLBACK_HISTORY_STATES);
 	#pendingInputs = [];
 	#pendingGoal = null;
+	#disconnectTimers = new Map();
+	#disconnectedPlayerIds = new Set();
+	#readyPlayerIds = new Set();
+	#rematchPlayerIds = new Set();
+	#onHostChanged = null;
+	#onPlayerRemoved = null;
+	#postGameCleanupTimer = null;
 	#rollbackStats = {
 		rollbacks: 0,
 		replayedTicks: 0,
@@ -52,12 +61,16 @@ export default class ServerScene extends Scene {
 		cappedLatencyInputs: 0
 	};
 
-	constructor(socket, lives, onGameEnd) {
+	constructor(socket, lives, onGameEnd, options = {}) {
 		super(new GameState());
 
 		this.#socket = socket;
 		this.#onGameEnd = onGameEnd;
-		this.hostUser = null;
+		this.hostUserId =
+			options.hostUserId === undefined ? null : String(options.hostUserId);
+		this.#onHostChanged = options.onHostChanged ?? null;
+		this.#onPlayerRemoved = options.onPlayerRemoved ?? null;
+		this.#scheduler = options.scheduler ?? null;
 
 		// Order matters: Sync with public/main.js
 		this.registerGameObject(new ArenaCommon('gameArena'));
@@ -87,47 +100,77 @@ export default class ServerScene extends Scene {
 		socket.on('client:disconnect', this.#onDisconnect.bind(this));
 		socket.addHandler('move', this.#recvMove.bind(this));
 		socket.addHandler('start', this.#startGame.bind(this));
+		socket.addHandler('ready', this.#setReady.bind(this));
+		socket.addHandler('rematch', this.#setRematchReady.bind(this));
 
 		this.#numLives = lives ?? 7;
 		this.#recordHistory(this.#serverTick);
 	}
 
 	start() {
-		if (this.#interval) return;
-
-		let lastTime = performance.now();
-		let accumulator = 0;
+		if (this.#running) return;
+		this.#running = true;
 		this.#sendSync();
-
-		this.#interval = setInterval(() => {
-			const now = performance.now();
-			const elapsed = Math.max(0, (now - lastTime) / 1000);
-			accumulator = Math.min(
-				accumulator + elapsed,
-				FIXED_SIMULATION_STEP * MAX_SERVER_CATCHUP_STEPS
-			);
-
-			let steps = 0;
-			while (
-				accumulator >= FIXED_SIMULATION_STEP &&
-				steps < MAX_SERVER_CATCHUP_STEPS
-			) {
-				this.advanceTick();
-				accumulator -= FIXED_SIMULATION_STEP;
-				steps++;
-			}
-
-			lastTime = now;
-		}, FIXED_SIMULATION_STEP_MS);
+		this.#scheduler?.add(this);
 	}
 
 	stop() {
-		if (this.#interval) clearInterval(this.#interval);
-		this.#interval = null;
+		this.#stopSimulation();
+		for (const entry of this.#disconnectTimers.values()) {
+			clearTimeout(entry.timer);
+		}
+		this.#disconnectTimers.clear();
+		if (this.#postGameCleanupTimer) {
+			clearTimeout(this.#postGameCleanupTimer);
+			this.#postGameCleanupTimer = null;
+		}
+	}
+
+	#stopSimulation() {
+		if (!this.#running) return;
+		this.#running = false;
+		this.#scheduler?.remove(this);
 	}
 
 	get inProgress() {
 		return this.#inProgress;
+	}
+
+	get status() {
+		if (this.#inProgress) return 'in_progress';
+		if (this.#gameOver) return 'finished';
+		return 'waiting';
+	}
+
+	get playerCount() {
+		return this.state.players.size;
+	}
+
+	hasPlayer(userId) {
+		return this.state.players.has(String(userId));
+	}
+
+	setHostUserId(userId) {
+		const nextHostUserId = userId === null ? null : String(userId);
+		if (this.hostUserId === nextHostUserId) return;
+		this.hostUserId = nextHostUserId;
+		this.#onHostChanged?.(nextHostUserId);
+		this.#updatePaddles();
+	}
+
+	canAcceptPlayer(userId = null) {
+		if (this.#inProgress || this.#gameOver) return false;
+		if (userId !== null && this.hasPlayer(userId)) return true;
+		if (this.state.players.size >= 2) return false;
+		if (
+			this.hostUserId !== null &&
+			!this.state.players.has(this.hostUserId) &&
+			userId !== null &&
+			String(userId) !== this.hostUserId
+		) {
+			return this.state.players.size === 0;
+		}
+		return true;
 	}
 
 	get serverTick() {
@@ -144,8 +187,10 @@ export default class ServerScene extends Scene {
 
 	/** Advance exactly one authoritative fixed simulation tick. */
 	advanceTick() {
+		if (this.#inProgress && this.#disconnectedPlayerIds.size > 0) return;
 		this.#processPendingInputs();
 		this.#commitPendingGoalIfReady();
+		if (this.#gameEnded) return;
 		this.#updateRespawnState();
 
 		if (!this.#history.get(this.#serverTick)) {
@@ -231,7 +276,7 @@ export default class ServerScene extends Scene {
 			!this.#gameOver;
 
 		for (const queued of pendingInputs) {
-			const player = this.state.players.get(queued.username);
+			const player = this.state.players.get(queued.userId);
 			const controller = player?.paddle.controller;
 			if (!controller) continue;
 
@@ -307,7 +352,7 @@ export default class ServerScene extends Scene {
 
 		this.#pendingGoal = {
 			tick: this.#simulationTick + 1,
-			scoredOn: wall.player.username,
+			scoredOn: wall.player.userId,
 			position: [...ball.x]
 		};
 		ball.v.zero();
@@ -350,20 +395,20 @@ export default class ServerScene extends Scene {
 			return;
 		}
 
-		this.#endGame(scoredOnPlayer.username);
+		this.#endGame(scoredOnPlayer.userId);
 	}
 
 	#sendSync() {
 		const physicsState = this.state.physics.exportState();
 		const gameInfo = {};
-		for (const [username, player] of this.state.players) {
-			gameInfo[username] = { lives: player.lives };
+		for (const [userId, player] of this.state.players) {
+			gameInfo[userId] = { lives: player.lives };
 		}
 		const serverTs = Date.now();
 
-		this.#socket.forEachClient((username, ws) => {
+		this.#socket.forEachClient((userId, ws) => {
 			const paddleController =
-				this.state.players.get(username)?.paddle.controller;
+				this.state.players.get(userId)?.paddle.controller;
 			this.#socket.safeSend(ws, {
 				type: 'sync',
 				ack: paddleController?.ack ?? -1,
@@ -382,67 +427,142 @@ export default class ServerScene extends Scene {
 		});
 	}
 
-	#onConnect(username) {
-		if (this.state.players.size >= 2) {
+	#onConnect(userId, profile) {
+		userId = String(userId);
+		const reconnectEntry = this.#disconnectTimers.get(userId);
+		if (reconnectEntry) {
+			clearTimeout(reconnectEntry.timer);
+			this.#disconnectTimers.delete(userId);
+			this.#disconnectedPlayerIds.delete(userId);
+		}
+
+		const existingPlayer = this.state.players.get(userId);
+		if (existingPlayer) {
+			existingPlayer.username = profile.displayName;
+			existingPlayer.paddle.controller?.reset(this.#serverTick);
+			this.#pendingInputs = this.#pendingInputs.filter(
+				(input) => input.userId !== userId
+			);
+			this.#resetRollbackHistory();
+			this.#socket.broadcast({ type: 'playerReconnected', userId });
 			this.#updatePaddles();
+			this.#sendSync();
 			return;
 		}
-		const pid = this.state.players.size;
-		const myPaddle = this.getGameObject(`paddle${pid + 1}`);
-		const thisPlayer = new Player(username, myPaddle, DEFAULT_ELO);
-		this.state.players.set(username, thisPlayer);
-		const arena = this.getGameObject('gameArena');
 
-		// Hacky: Injecting the player into the bodies. Should probably see later about changing this.
-		// Consequence of having to conform to the rigid map.
+		if (!this.canAcceptPlayer(userId)) {
+			this.#updatePaddles();
+			this.#sendSync();
+			return;
+		}
+
+		const usedPaddles = new Set(
+			[...this.state.players.values()].map((player) => player.paddle.key)
+		);
+		const myPaddle = ['paddle1', 'paddle2']
+			.map((key) => this.getGameObject(key))
+			.find((paddle) => !usedPaddles.has(paddle.key));
+		if (!myPaddle) return;
+
+		const thisPlayer = new Player(
+			userId,
+			profile.displayName,
+			myPaddle,
+			DEFAULT_ELO
+		);
+		this.state.players.set(userId, thisPlayer);
+		const arena = this.getGameObject('gameArena');
 		if (myPaddle.body.x.x < 0) arena.bodies[4].player = thisPlayer;
 		else arena.bodies[5].player = thisPlayer;
 
-		if (this.hostUser === null) this.hostUser = username;
+		if (this.hostUserId === null) {
+			this.setHostUserId(userId);
+		}
 
 		this.#updatePaddles();
+		this.#sendSync();
 		this.#loadPlayerProfile(thisPlayer);
 	}
 
-	#onDisconnect(username) {
-		if (this.#gameEnded) return;
+	#onDisconnect(userId) {
+		userId = String(userId);
+		const player = this.state.players.get(userId);
+		if (!player || this.#disconnectTimers.has(userId)) return;
 
-		if (!this.inProgress) {
-			const player = this.state.players.get(username);
-			if (player) {
-				this.state.players.delete(username);
-				const arena = this.getGameObject('gameArena');
-				for (const body of arena.bodies) {
-					if (body.player === player) delete body.player;
-				}
-			}
+		const expiresAt = Date.now() + RECONNECT_GRACE_MS;
+		this.#disconnectedPlayerIds.add(userId);
+		const timer = setTimeout(
+			() => this.#expireDisconnectedPlayer(userId),
+			RECONNECT_GRACE_MS
+		);
+		timer.unref?.();
+		this.#disconnectTimers.set(userId, { timer, expiresAt });
+		this.#readyPlayerIds.delete(userId);
+		this.#rematchPlayerIds.delete(userId);
+		this.#socket.broadcast({
+			type: 'reconnectStatus',
+			userId,
+			username: player.username,
+			expiresAt
+		});
+		this.#updatePaddles();
+	}
 
-			if (username === this.hostUser) {
-				this.#socket.broadcast({
-					type: 'gameCancelled'
-				});
-				this.#onGameEnd?.();
-			}
+	#expireDisconnectedPlayer(userId) {
+		if (this.#socket.isConnected?.(userId)) return;
+		this.#disconnectTimers.delete(userId);
+		this.#disconnectedPlayerIds.delete(userId);
 
+		if (this.#inProgress && !this.#gameEnded) {
+			this.#endGame(userId, true);
 			return;
 		}
 
-		if (this.state.players.has(username)) this.#endGame(username);
+		this.#removePlayer(userId);
+		if (this.#gameOver) this.#resetToWaiting();
+	}
+
+	#removePlayer(userId) {
+		const player = this.state.players.get(userId);
+		if (!player) return;
+		this.state.players.delete(userId);
+		this.#readyPlayerIds.delete(userId);
+		this.#rematchPlayerIds.delete(userId);
+		const arena = this.getGameObject('gameArena');
+		for (const body of arena.bodies) {
+			if (body.player === player) delete body.player;
+		}
+
+		if (userId === this.hostUserId) {
+			this.setHostUserId(
+				[...this.state.players.keys()].find((id) =>
+					this.#socket.isConnected?.(id)
+				) ??
+					[...this.state.players.keys()][0] ??
+					null
+			);
+		}
+		this.#onPlayerRemoved?.(userId);
+		this.#updatePaddles();
 	}
 
 	#updatePaddles() {
-		this.#socket.forEachClient((thisUsername, ws) => {
+		this.#socket.forEachClient((thisUserId, ws) => {
 			const players = [...this.state.players.entries()].map(
-				([username, player]) => {
+				([userId, player]) => {
 					const paddle = player.paddle;
 					return {
+						userId,
 						key: paddle.key,
-						username: username,
+						username: player.username,
 						elo: player.elo,
 						ballSkinKey: player.ballSkinKey,
 						paddleSkinKey: player.paddleSkinKey,
 						goalExplosionKey: player.goalExplosionKey,
-						remote: thisUsername !== username,
+						remote: thisUserId !== userId,
+						connected: !this.#disconnectedPlayerIds.has(userId),
+						ready: this.#readyPlayerIds.has(userId),
+						rematchReady: this.#rematchPlayerIds.has(userId),
 						pos: [...paddle.body.x.data]
 					};
 				}
@@ -452,8 +572,8 @@ export default class ServerScene extends Scene {
 				type: 'playerSync',
 				// order must be the same between client and server
 				players: [...players],
-				host: this.hostUser,
-				username: thisUsername
+				hostUserId: this.hostUserId,
+				userId: thisUserId
 			});
 		});
 	}
@@ -472,15 +592,15 @@ export default class ServerScene extends Scene {
 						 LEFT JOIN items p ON p.id = ue.paddle_skin_item_id
 						 LEFT JOIN items b ON b.id = ue.ball_skin_item_id
 						 LEFT JOIN items g ON g.id = ue.goal_explosion_item_id
-						 WHERE u.display_name = ? LIMIT 1`,
-					[player.username],
+						 WHERE u.id = ? LIMIT 1`,
+					[Number(player.userId)],
 					(err, result) => {
 						if (err) reject(err);
 						else resolve(result);
 					}
 				);
 			});
-			const currentPlayer = this.state.players.get(player.username);
+			const currentPlayer = this.state.players.get(player.userId);
 			if (currentPlayer !== player) return;
 
 			const elo = Number(row?.elo);
@@ -508,19 +628,77 @@ export default class ServerScene extends Scene {
 		}
 	}
 
-	#startGame(socket, username, ws, msg) {
-		if (username !== this.hostUser)
-			return { type: 'error', message: 'bruh u not the host' };
+	#startGame(socket, userId) {
+		if (userId !== this.hostUserId)
+			return { type: 'error', message: 'Only the host can start the game' };
 		if (this.#inProgress || this.#gameEnded)
 			return { type: 'error', message: 'Game is already in progress' };
 		if (this.state.players.size < 2)
 			return {
 				type: 'error',
-				message: 'bruh we gotta wait for another person'
+				message: 'Two players are required to start'
 			};
+		if (
+			[...this.state.players.keys()].some(
+				(id) => !this.#readyPlayerIds.has(id) || !this.#socket.isConnected?.(id)
+			)
+		) {
+			return {
+				type: 'error',
+				message: 'Both players must be connected and ready'
+			};
+		}
+
+		this.#beginMatch();
+	}
+
+	#setReady(socket, userId, ws, msg) {
+		if (this.#inProgress || this.#gameOver || !this.state.players.has(userId)) {
+			return {
+				type: 'error',
+				message: 'Readiness cannot be changed right now'
+			};
+		}
+		if (msg.ready) this.#readyPlayerIds.add(userId);
+		else this.#readyPlayerIds.delete(userId);
+		this.#updatePaddles();
+	}
+
+	#setRematchReady(socket, userId, ws, msg) {
+		if (!this.#gameOver || !this.state.players.has(userId)) {
+			return {
+				type: 'error',
+				message: 'There is no completed match to replay'
+			};
+		}
+		if (msg.ready) this.#rematchPlayerIds.add(userId);
+		else this.#rematchPlayerIds.delete(userId);
+		this.#updatePaddles();
+
+		const connectedPlayerIds = [...this.state.players.keys()].filter((id) =>
+			this.#socket.isConnected?.(id)
+		);
+		if (
+			connectedPlayerIds.length === 2 &&
+			connectedPlayerIds.every((id) => this.#rematchPlayerIds.has(id))
+		) {
+			this.#resetForRematch();
+			this.#beginMatch();
+		}
+	}
+
+	#beginMatch() {
+		for (const entry of this.#disconnectTimers.values())
+			clearTimeout(entry.timer);
+		this.#disconnectTimers.clear();
+		this.#disconnectedPlayerIds.clear();
+		this.#readyPlayerIds.clear();
+		this.#rematchPlayerIds.clear();
+		this.#pendingInputs = [];
 
 		for (const player of this.state.players.values()) {
 			player.lives = this.#numLives;
+			player.paddle.controller?.reset(this.#serverTick);
 		}
 
 		this.#gameOver = null;
@@ -528,24 +706,28 @@ export default class ServerScene extends Scene {
 		this.#matchStarted = true;
 		this.#ball.enabled = true;
 		this.#inProgress = true;
+		this.#gameEnded = false;
 
-		// ???
 		this.#startServe(
 			Array.from(this.state.players.values())[Math.floor(Math.random() * 2)],
 			true
 		);
+		this.start();
+		this.#updatePaddles();
+		this.#sendSync();
 	}
 
-	#recvMove(socket, username, ws, msg) {
+	#recvMove(socket, userId, ws, msg) {
+		if (!this.#inProgress) return;
 		const controller =
-			this.state.players.get(username)?.paddle.controller ?? null;
+			this.state.players.get(userId)?.paddle.controller ?? null;
 		const input = controller?.acceptInput(msg);
 		if (!input) return;
 
 		this.#pendingInputs.push({
-			username,
+			userId,
 			input,
-			rttMs: socket.getRttMs?.(username) ?? null
+			rttMs: socket.getRttMs?.(userId) ?? null
 		});
 	}
 
@@ -560,40 +742,112 @@ export default class ServerScene extends Scene {
 		this.#resetRollbackHistory();
 	}
 
-	#endGame(loser) {
+	#resetForRematch() {
+		this.#resetMatchState();
+	}
+
+	#resetToWaiting() {
+		this.#resetMatchState();
+	}
+
+	#resetMatchState() {
+		if (this.#postGameCleanupTimer) {
+			clearTimeout(this.#postGameCleanupTimer);
+			this.#postGameCleanupTimer = null;
+		}
+		this.#gameOver = null;
+		this.#gameEnded = false;
+		this.#matchStarted = false;
+		this.#inProgress = false;
+		this.#pendingGoal = null;
+		this.#pendingInputs = [];
+		this.#respawn = null;
+		this.#servingPlayer = null;
+		this.#readyPlayerIds.clear();
+		this.#rematchPlayerIds.clear();
+		this.#ball.enabled = false;
+		this.#ball.body.isTrigger = false;
+		this.#ball.body.x.zero();
+		this.#ball.body.v.zero();
+
+		for (const player of this.state.players.values()) {
+			player.lives = this.#numLives;
+			const initialX =
+				player.paddle.key === 'paddle1' ? -23.5 / 2.125 : 23.5 / 2.125;
+			player.paddle.body.x.assign(initialX, 0, 0);
+			player.paddle.body.v.zero();
+			player.paddle.controller?.reset?.();
+		}
+
+		this.#resetRollbackHistory();
+		this.#socket.broadcast({ type: 'matchReset' });
+		this.#updatePaddles();
+		this.#sendSync();
+	}
+
+	#endGame(loserId, removeDisconnectedLoser = false) {
 		this.#gameEnded = true;
+		this.#inProgress = false;
 		this.#pendingGoal = null;
 		this.#ball.body.isTrigger = false;
 
-		const winner = [...this.state.players.values()].find(
-			(player) => player.username !== loser
-		)?.username;
+		const loserPlayer = this.state.players.get(loserId);
+		const winnerPlayer = [...this.state.players.values()].find(
+			(player) => player.userId !== loserId
+		);
 		const finalLives = Object.fromEntries(
-			[...this.state.players].map(([username, player]) => [
-				username,
-				player.lives
-			])
+			[...this.state.players].map(([userId, player]) => [userId, player.lives])
 		);
 
-		this.#gameOver = { loser, winner, finalLives, ratings: null };
+		const gameOver = {
+			loserId,
+			loser: loserPlayer?.username ?? 'Player',
+			winnerId: winnerPlayer?.userId ?? null,
+			winner: winnerPlayer?.username ?? null,
+			finalLives,
+			ratings: null
+		};
+		this.#gameOver = gameOver;
 		this.#ball.enabled = false;
 		this.#resetRollbackHistory();
-		this.#saveGameResult().then(() => {
+		this.#stopSimulation();
+		this.#saveGameResult(gameOver).then((savedGameOver) => {
+			// A lobby reset can happen while the database transaction is in flight.
+			// Do not let an old result overwrite or rebroadcast into a newer match.
+			if (this.#gameOver !== gameOver) return;
+			this.#gameOver = savedGameOver;
 			this.#socket.broadcast({
 				type: 'gameOver',
-				...this.#gameOver
+				...savedGameOver
 			});
 			this.#onGameEnd?.();
+			if (removeDisconnectedLoser) {
+				this.#scheduleForfeitCleanup(loserId);
+			}
 		});
 	}
 
-	async #saveGameResult() {
-		if (!this.#gameOver?.winner || !this.#gameOver?.loser) return;
+	#scheduleForfeitCleanup(loserId) {
+		if (this.#postGameCleanupTimer) {
+			clearTimeout(this.#postGameCleanupTimer);
+		}
+		this.#postGameCleanupTimer = setTimeout(() => {
+			this.#postGameCleanupTimer = null;
+			if (this.#socket.isConnected?.(loserId)) return;
+			this.#removePlayer(loserId);
+			this.#resetToWaiting();
+		}, FORFEIT_RESULT_DISPLAY_MS);
+		this.#postGameCleanupTimer.unref?.();
+	}
 
-		const winnerName = this.#gameOver.winner;
-		const loserName = this.#gameOver.loser;
-		const winnerId = this.#socket.getUserId(winnerName);
-		const loserId = this.#socket.getUserId(loserName);
+	async #saveGameResult(gameOver) {
+		if (!gameOver?.winner || !gameOver?.loser) return gameOver;
+
+		const winnerId = Number(gameOver.winnerId);
+		const loserId = Number(gameOver.loserId);
+		if (!Number.isInteger(winnerId) || !Number.isInteger(loserId)) {
+			return gameOver;
+		}
 
 		try {
 			const winner = await new Promise((resolve, reject) => {
@@ -610,7 +864,7 @@ export default class ServerScene extends Scene {
 			});
 			if (!winner || !loser) {
 				console.warn('skipping elo/match_history update: user lookup failed');
-				return;
+				return gameOver;
 			}
 
 			const winnerExpected = 1 / (1 + 10 ** ((loser.elo - winner.elo) / 400));
@@ -620,28 +874,24 @@ export default class ServerScene extends Scene {
 			const winnerDelta = winnerEloAfter - winner.elo;
 			const loserDelta = loserEloAfter - loser.elo;
 
-			const winnerLives = this.state.players.get(winnerName)?.lives;
-
-			const winnerPlayer = this.state.players.get(winnerName);
-			const loserPlayer = this.state.players.get(loserName);
-			if (winnerPlayer) winnerPlayer.elo = winnerEloAfter;
-			if (loserPlayer) loserPlayer.elo = loserEloAfter;
-
-			this.#gameOver = {
-				...this.#gameOver,
+			const winnerLives = gameOver.finalLives?.[String(winnerId)];
+			const savedGameOver = {
+				...gameOver,
 				ratings: {
-					[winnerName]: {
+					[String(winnerId)]: {
 						before: winner.elo,
 						after: winnerEloAfter,
 						change: winnerDelta
 					},
-					[loserName]: {
+					[String(loserId)]: {
 						before: loser.elo,
 						after: loserEloAfter,
 						change: loserDelta
 					}
 				}
 			};
+			/** @type {{id: number, display_name: string, kind: string} | null} */
+			let unlockedItem = null;
 
 			await new Promise((resolve, reject) => {
 				db.run('BEGIN TRANSACTION', (err) => {
@@ -712,13 +962,7 @@ export default class ServerScene extends Scene {
 								[winnerId, item.id],
 								(err2) => {
 									if (err2) return reject(err2);
-									// Tell only the winner what they unlocked.
-									this.#socket.safeSendToUser(winnerName, {
-										type: 'itemUnlocked',
-										itemId: item.id,
-										displayName: item.display_name,
-										kind: item.kind
-									});
+									unlockedItem = item;
 									resolve();
 								}
 							);
@@ -731,6 +975,23 @@ export default class ServerScene extends Scene {
 						else resolve();
 					});
 				});
+
+				const winnerPlayer = this.state.players.get(String(winnerId));
+				const loserPlayer = this.state.players.get(String(loserId));
+				if (winnerPlayer) winnerPlayer.elo = winnerEloAfter;
+				if (loserPlayer) loserPlayer.elo = loserEloAfter;
+
+				if (unlockedItem) {
+					// Notify only after commit so a rolled-back unlock is never shown.
+					this.#socket.safeSendToUser(String(winnerId), {
+						type: 'itemUnlocked',
+						itemId: unlockedItem.id,
+						displayName: unlockedItem.display_name,
+						kind: unlockedItem.kind
+					});
+				}
+
+				return savedGameOver;
 			} catch (txErr) {
 				await new Promise((resolve) => {
 					db.run('ROLLBACK', () => resolve());
@@ -739,6 +1000,7 @@ export default class ServerScene extends Scene {
 			}
 		} catch (err) {
 			console.error('Failed to save game:', err);
+			return gameOver;
 		}
 	}
 
