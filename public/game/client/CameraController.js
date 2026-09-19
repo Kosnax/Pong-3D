@@ -28,7 +28,8 @@ export class CameraController extends GameObjectBase {
 	}
 
 	static _copyPosition(source, out) {
-		const pos = source?.position ?? source?.body?.x ?? source;
+		const pos =
+			source?.position ?? source?.visual?.position ?? source?.body?.x ?? source;
 		out.set(pos?.x ?? 0, pos?.y ?? 0, pos?.z ?? 0);
 		return out;
 	}
@@ -56,11 +57,15 @@ export class CameraController extends GameObjectBase {
 
 	update(dt) {
 		if (!this.followTarget || this.scene.isReplaying) return;
+		this._updateShake(dt);
+	}
+
+	render() {
+		if (!this.followTarget) return;
 
 		CameraController._copyPosition(this.followTarget, this._tmpFollowTarget);
 		this.camera.position.copy(this._tmpFollowTarget).add(this.offset);
 
-		this._updateShake(dt);
 		this.camera.position.add(this._shakeOffset);
 
 		// FIXME

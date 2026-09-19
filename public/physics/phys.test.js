@@ -35,3 +35,21 @@ describe('collision end-to-end test', () => {
 		expect([...collisionPairs]).toEqual(['box1:box2']);
 	});
 });
+
+describe('client prediction', () => {
+	test('replays one body without advancing the rest of the world', () => {
+		const engine = new PhysicsEngine();
+		const paddle = new RigidBody(1);
+		const ball = new RigidBody(1);
+		paddle.v.x = 2;
+		ball.v.x = 10;
+		engine.registerBody('paddle', paddle);
+		engine.registerBody('ball', ball);
+
+		engine.integrateBody(paddle, 0.1);
+
+		expect(paddle.x.x).toBeCloseTo(0.2);
+		expect(ball.x.x).toBe(0);
+		expect(engine.t).toBe(0);
+	});
+});

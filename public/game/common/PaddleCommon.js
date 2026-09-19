@@ -49,6 +49,10 @@ export class PaddleCommon extends GameObjectBase {
 			f.addVec(direction);
 		};
 
+		this.constrainToBounds();
+	}
+
+	constrainToBounds() {
 		// Keep paddle within bounds
 		if (this.body.x.y > Constants.PADDLE_BOUND)
 			this.body.x.y = Constants.PADDLE_BOUND;

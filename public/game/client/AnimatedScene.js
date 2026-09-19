@@ -11,6 +11,9 @@ import { GoalAnimationSpawner } from '../shaders/goalAnimationSpawner.js';
 import { GameObjectCustom } from '../common/GameObject.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
+const FIXED_SIMULATION_STEP = 1 / Constants.SIMULATION_RATE;
+const MAX_FRAME_DELTA = 0.05;
+
 /**
  * Scene with rendering capabilities. Uses the `visual` on each game object.
  */
@@ -74,8 +77,9 @@ export class AnimatedScene extends Scene {
 		this.camera.up.set(0, 1, 0);
 		this.camera.lookAt(0, 0, 0);
 
-		this.physicsClock = new THREE.Clock();
-		this.physicsInterval = null;
+		this.physicsAccumulator = 0;
+		this.lastFrameTimeMs = null;
+		this.animationFrameId = null;
 
 		this._isRunning = false;
 		this._hiddenHtml = new Map();
@@ -154,38 +158,53 @@ export class AnimatedScene extends Scene {
 		return super.deleteGameObject(key);
 	}
 
-	simulate() {
-		const delta = this.physicsClock.getDelta();
-		this.step(Math.min(delta, 2 / Constants.SIMULATION_RATE));
-	}
-
-	animate() {
+	animate(timestamp) {
 		if (!this._isRunning) {
 			this.renderer.clear();
 			return;
 		}
 
-		requestAnimationFrame(() => this.animate());
+		const now = Number.isFinite(timestamp) ? timestamp : performance.now();
+		const frameDelta = Math.max(
+			0,
+			this.lastFrameTimeMs === null
+				? 0
+				: Math.min((now - this.lastFrameTimeMs) / 1000, MAX_FRAME_DELTA)
+		);
+		this.lastFrameTimeMs = now;
+		this.physicsAccumulator = Math.min(
+			this.physicsAccumulator + frameDelta,
+			MAX_FRAME_DELTA
+		);
+
+		while (this.physicsAccumulator >= FIXED_SIMULATION_STEP) {
+			this.step(FIXED_SIMULATION_STEP);
+			this.physicsAccumulator -= FIXED_SIMULATION_STEP;
+		}
+
+		for (const obj of this.gameObjects.values()) {
+			obj.render(frameDelta, this.physicsAccumulator);
+		}
 
 		if (this.controls !== null) {
 			this.controls.update();
 		}
 
 		this.renderer.render(this.scene, this.camera);
+		this.animationFrameId = requestAnimationFrame((nextTimestamp) =>
+			this.animate(nextTimestamp)
+		);
 	}
 
 	start() {
 		if (this._isRunning) return;
 		this._isRunning = true;
 		this._showNonThreeElements();
-
-		// FIXME: this is not precise
-		this.physicsInterval = setInterval(
-			() => this.simulate(),
-			1000 / Constants.SIMULATION_RATE
+		this.physicsAccumulator = 0;
+		this.lastFrameTimeMs = null;
+		this.animationFrameId = requestAnimationFrame((timestamp) =>
+			this.animate(timestamp)
 		);
-
-		this.animate();
 	}
 
 	stop() {
@@ -193,9 +212,13 @@ export class AnimatedScene extends Scene {
 		this._isRunning = false;
 		this._hideNonThreeElements();
 		this.renderer.render(this.scene, this.camera);
+		if (this.animationFrameId !== null) {
+			cancelAnimationFrame(this.animationFrameId);
+			this.animationFrameId = null;
+		}
 
-		if (this.physicsInterval) clearInterval(this.physicsInterval);
-		this.physicsInterval = null;
+		this.physicsAccumulator = 0;
+		this.lastFrameTimeMs = null;
 	}
 
 	_hideNonThreeElements() {
@@ -242,6 +265,7 @@ export class AnimatedScene extends Scene {
 				renderedPaddles.set(username, player.paddle.visual.position.clone());
 			}
 		}
+		const renderedBallPosition = this.#ball.visual.position.clone();
 
 		this.state.physics.importState(msg.physics);
 
@@ -262,46 +286,46 @@ export class AnimatedScene extends Scene {
 		}
 
 		const player = this.state.players.get(this.username);
+		const controller = player?.paddle.controller;
 
-		if (player === undefined) {
-			this.#smoothPaddleCorrections(renderedPaddles);
-			return;
+		if (controller) {
+			const ack = Number.isInteger(msg.ack) ? msg.ack : -1;
+			controller.inputBuffer = controller.inputBuffer.filter(
+				(input) => input.seq > ack
+			);
+			controller.useInputBuffer = true;
+			this.isReplaying = true;
+
+			try {
+				for (let i = 0; i < controller.inputBuffer.length; i++) {
+					controller.inputBufferIdx = i;
+					player.paddle.update(FIXED_SIMULATION_STEP);
+					this.state.physics.integrateBody(
+						player.paddle.body,
+						FIXED_SIMULATION_STEP
+					);
+					player.paddle.constrainToBounds();
+				}
+			} finally {
+				this.isReplaying = false;
+				controller.useInputBuffer = false;
+			}
 		}
 
-		const controller = player.paddle.controller;
-
-		// prediction!
-		let idx = -1;
-		for (let i = 0; i < controller.inputBuffer.length; i++) {
-			if (controller.inputBuffer[i].seq <= msg.ack) continue;
-
-			idx = i;
-			break;
-		}
-
-		if (idx === -1) {
-			this.#smoothPaddleCorrections(renderedPaddles);
-			return; // all inputs ack'd
-		}
-
-		controller.inputBuffer = controller.inputBuffer.slice(idx); // drop ack'd inputs
-		controller.useInputBuffer = true;
-		this.isReplaying = true;
-
-		for (let i = 0; i < controller.inputBuffer.length; i++) {
-			controller.inputBufferIdx = i;
-			this.step(1 / Constants.SIMULATION_RATE); // Is this not good enough? If not, we can store the physics time in the packets themselves
-		}
-
-		this.isReplaying = false;
-		controller.useInputBuffer = false;
-		this.#smoothPaddleCorrections(renderedPaddles);
+		this.#smoothRenderCorrections(renderedPaddles, renderedBallPosition);
 	}
 
-	#smoothPaddleCorrections(renderedPaddles) {
+	#smoothRenderCorrections(renderedPaddles, renderedBallPosition) {
 		for (const [username, player] of this.state.players) {
-			player.paddle.smoothFromPosition(renderedPaddles.get(username));
+			player.paddle.smoothFromPosition(
+				renderedPaddles.get(username),
+				this.physicsAccumulator
+			);
 		}
+		this.#ball.smoothFromPosition(
+			renderedBallPosition,
+			this.physicsAccumulator
+		);
 	}
 
 	#gameOver(msg) {

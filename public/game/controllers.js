@@ -1,7 +1,9 @@
 import * as MATH from '../physics/math.js';
 import { MobileJoystick } from './mobileJoystick.js';
+import * as Constants from './constants.js';
 
 const INPUT_SEND_INTERVAL_MS = 1000 / 60;
+const MAX_PREDICTION_SAMPLES = 2 * Constants.SIMULATION_RATE;
 
 /*
 ------------------
@@ -127,10 +129,9 @@ export class KeyboardController {
 		const shouldSend =
 			this.lastSentSeq < 0 ||
 			now - this.lastInputSentAt >= INPUT_SEND_INTERVAL_MS;
-		const inputSeq = shouldSend ? this.seq++ : this.lastSentSeq;
 		const input = {
 			type: 'move',
-			seq: inputSeq,
+			seq: this.seq++,
 			direction: [...retDirection]
 		};
 
@@ -138,9 +139,15 @@ export class KeyboardController {
 		// latest state at a bounded rate so a slow connection cannot build a
 		// backlog of stale movement events.
 		this.inputBuffer.push(input);
+		if (this.inputBuffer.length > MAX_PREDICTION_SAMPLES) {
+			this.inputBuffer.splice(
+				0,
+				this.inputBuffer.length - MAX_PREDICTION_SAMPLES
+			);
+		}
 		if (shouldSend) {
 			this.socket?.send(input);
-			this.lastSentSeq = inputSeq;
+			this.lastSentSeq = input.seq;
 			this.lastInputSentAt = now;
 		}
 

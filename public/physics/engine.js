@@ -177,6 +177,20 @@ export class PhysicsEngine {
 		this.t += dt;
 	}
 
+	/**
+	 * Integrate a single body without advancing other world objects. This is
+	 * used to replay unacknowledged local input after a server correction.
+	 */
+	integrateBody(body, dt) {
+		if (!Number.isFinite(dt) || dt <= 0) return;
+
+		body.f.zero();
+		for (const force of body.forces.values()) force.apply(body.f);
+
+		body.x.addVec(body.v.clone().scale(dt));
+		body.v.addVec(body.f.clone().scale(dt / body.m));
+	}
+
 	registerBody(key, body) {
 		this.bodies.set(key, body);
 	}

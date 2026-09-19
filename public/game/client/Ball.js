@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { BallCommon } from '../common/BallCommon.js';
 import { BallSkin } from '../shaders/ballSkin.js';
+import { SmoothBodyRenderer } from './SmoothBodyRenderer.js';
 
 /**
  * Client-side Ball with THREE.js rendering
@@ -10,6 +11,7 @@ export class Ball extends BallCommon {
 	#visual = null;
 	#skin = null;
 	#goalSpawner = null;
+	#bodyRenderer = null;
 	scene = null;
 
 	constructor(key, spawner) {
@@ -18,6 +20,9 @@ export class Ball extends BallCommon {
 		this.#skin = new BallSkin();
 		this.#visual = this.#skin.visual;
 		this.#goalSpawner = spawner;
+		this.#bodyRenderer = new SmoothBodyRenderer(this.#visual, this.body, {
+			snapDistance: 6
+		});
 
 		this.body.col.onCollisionCallback = ((me, other) => {
 			const identifier = other.ballIdentifier;
@@ -39,6 +44,17 @@ export class Ball extends BallCommon {
 	update(dt) {
 		super.update(dt);
 		this.#skin.update(dt, this.body.v.norm());
+	}
+
+	// Visual transforms are applied once per display frame in render().
+	sync(dt) {}
+
+	render(frameDelta, extrapolation) {
+		this.#bodyRenderer.render(frameDelta, extrapolation);
+	}
+
+	smoothFromPosition(position, extrapolation = 0) {
+		this.#bodyRenderer.preserveRenderedPosition(position, extrapolation);
 	}
 
 	setSkinStyle(styleIndex) {

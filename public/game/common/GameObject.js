@@ -35,6 +35,13 @@ export class GameObjectBase {
 	}
 
 	/**
+	 * Function called once per display frame after fixed simulation steps.
+	 * @param {number} dt Time since the previous display frame.
+	 * @param {number} extrapolation Time since the latest fixed simulation step.
+	 */
+	render(dt, extrapolation) {}
+
+	/**
 	 * Function called when this object is removed from the scene.
 	 */
 	kill() {}
@@ -85,6 +92,12 @@ export class GameObjectCustom extends GameObjectBase {
 
 	sync(dt) {
 		if (typeof this.config.sync === 'function') this.config.sync(dt);
+	}
+
+	render(dt, extrapolation) {
+		if (typeof this.config.render === 'function') {
+			this.config.render(dt, extrapolation);
+		}
 	}
 
 	kill() {
