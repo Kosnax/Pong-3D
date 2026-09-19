@@ -1,28 +1,44 @@
 import { Vec3 } from '../../public/physics/math.js';
 
-const MAX_QUEUE_LENGTH = 5;
-
 export class PaddleController {
-	#inputQueue = [];
+	#direction = new Vec3();
+	#pendingInput = null;
+	#lastReceivedSeq = -1;
 
 	constructor() {
-		this.ack = 0;
+		this.ack = -1;
 	}
 
 	enqueueInput(input) {
-		this.#inputQueue.push(input);
+		if (!Number.isInteger(input?.seq) || input.seq <= this.#lastReceivedSeq) {
+			return;
+		}
+
+		const direction = input.direction;
+		if (
+			!Array.isArray(direction) ||
+			direction.length !== 3 ||
+			!direction.every(Number.isFinite)
+		) {
+			return;
+		}
+
+		// Movement input is a state, not an event. Keep the newest packet and
+		// continue using its direction until a newer packet arrives.
+		this.#lastReceivedSeq = input.seq;
+		this.#pendingInput = {
+			seq: input.seq,
+			direction: new Vec3(...direction)
+		};
 	}
 
 	getDirection() {
-		// This would probably only happen if we were getting spammed with packets (trying to spoof the server) or a bunch of packets come in at once
-		// So I think this is good logic? Worth looking into
-		if (this.#inputQueue.length > MAX_QUEUE_LENGTH) {
-			this.#inputQueue = this.#inputQueue.slice(-MAX_QUEUE_LENGTH);
+		if (this.#pendingInput) {
+			this.#direction = this.#pendingInput.direction;
+			this.ack = this.#pendingInput.seq;
+			this.#pendingInput = null;
 		}
 
-		if (this.#inputQueue.length === 0) return new Vec3();
-		const msg = this.#inputQueue.shift();
-		this.ack = msg.seq;
-		return new Vec3(...msg.direction);
+		return this.#direction.clone();
 	}
 }

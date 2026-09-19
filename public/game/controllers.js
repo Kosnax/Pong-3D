@@ -1,6 +1,8 @@
 import * as MATH from '../physics/math.js';
 import { MobileJoystick } from './mobileJoystick.js';
 
+const INPUT_SEND_INTERVAL_MS = 1000 / 60;
+
 /*
 ------------------
 Controller classes
@@ -39,6 +41,8 @@ export class KeyboardController {
 
 		this.inputBuffer = [];
 		this.seq = 0;
+		this.lastSentSeq = -1;
+		this.lastInputSentAt = -Infinity;
 		this.useInputBuffer = false;
 		this.inputBufferIdx = 0;
 		this.socket = socket;
@@ -119,13 +123,26 @@ export class KeyboardController {
 		const magnitude = retDirection.norm();
 		if (magnitude > 1) retDirection.scale(1 / magnitude);
 
-		this.inputBuffer.push({
+		const now = performance.now();
+		const shouldSend =
+			this.lastSentSeq < 0 ||
+			now - this.lastInputSentAt >= INPUT_SEND_INTERVAL_MS;
+		const inputSeq = shouldSend ? this.seq++ : this.lastSentSeq;
+		const input = {
 			type: 'move',
-			seq: this.seq,
+			seq: inputSeq,
 			direction: [...retDirection]
-		});
-		this.socket?.send(this.inputBuffer.at(-1));
-		this.seq++;
+		};
+
+		// Keep one prediction sample per local simulation tick, but transmit the
+		// latest state at a bounded rate so a slow connection cannot build a
+		// backlog of stale movement events.
+		this.inputBuffer.push(input);
+		if (shouldSend) {
+			this.socket?.send(input);
+			this.lastSentSeq = inputSeq;
+			this.lastInputSentAt = now;
+		}
 
 		return retDirection;
 	}

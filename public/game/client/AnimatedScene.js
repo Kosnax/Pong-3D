@@ -235,6 +235,13 @@ export class AnimatedScene extends Scene {
 	}
 
 	#sync(msg) {
+		const renderedPaddles = new Map();
+		for (const [username, player] of this.state.players) {
+			if (player.paddle.visual) {
+				renderedPaddles.set(username, player.paddle.visual.position.clone());
+			}
+		}
+
 		this.state.physics.importState(msg.physics);
 
 		this.#ball.enabled = msg.active;
@@ -255,7 +262,10 @@ export class AnimatedScene extends Scene {
 
 		const player = this.state.players.get(this.username);
 
-		if (player === undefined) return;
+		if (player === undefined) {
+			this.#smoothPaddleCorrections(renderedPaddles);
+			return;
+		}
 
 		const controller = player.paddle.controller;
 
@@ -268,7 +278,10 @@ export class AnimatedScene extends Scene {
 			break;
 		}
 
-		if (idx === -1) return; // all inputs ack'd
+		if (idx === -1) {
+			this.#smoothPaddleCorrections(renderedPaddles);
+			return; // all inputs ack'd
+		}
 
 		controller.inputBuffer = controller.inputBuffer.slice(idx); // drop ack'd inputs
 		controller.useInputBuffer = true;
@@ -281,6 +294,13 @@ export class AnimatedScene extends Scene {
 
 		this.isReplaying = false;
 		controller.useInputBuffer = false;
+		this.#smoothPaddleCorrections(renderedPaddles);
+	}
+
+	#smoothPaddleCorrections(renderedPaddles) {
+		for (const [username, player] of this.state.players) {
+			player.paddle.smoothFromPosition(renderedPaddles.get(username));
+		}
 	}
 
 	#gameOver(msg) {
