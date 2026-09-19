@@ -246,6 +246,13 @@
 					</div>
 				</div>
 			</div>
+
+			<div class="card" style="text-align: center;">
+				<h2>Unlock All Items</h2>
+				<p class="muted">Unlock every paddle skin, ball skin, and goal explosion.</p>
+				<button type="button" id="unlock-all-items">Unlock All Items</button>
+				<p id="unlock-all-items-msg" role="status" aria-live="polite"></p>
+			</div>
 		</section>
 	</div>
 
@@ -465,6 +472,39 @@
 				});
 			});
 		}
+
+		const unlockAllButton = document.getElementById('unlock-all-items');
+		const unlockAllMessage = document.getElementById('unlock-all-items-msg');
+
+		unlockAllButton?.addEventListener('click', async () => {
+			unlockAllButton.disabled = true;
+			unlockAllMessage.textContent = 'Unlocking items...';
+			unlockAllMessage.style.color = '';
+
+			try {
+				const response = await fetch('/user/items/unlockAll', {
+					method: 'POST',
+					credentials: 'same-origin'
+				});
+				const data = await response.json();
+
+				if (!response.ok || !data.ok) {
+					throw new Error(data.error || 'Failed to unlock items.');
+				}
+
+				document.querySelectorAll('#profile-panel-library .item.locked').forEach(item => {
+					item.classList.remove('locked');
+					item.disabled = false;
+				});
+				unlockAllMessage.style.color = 'lightgreen';
+				unlockAllMessage.textContent = 'All items unlocked.';
+				unlockAllButton.textContent = 'All Items Unlocked';
+			} catch (error) {
+				unlockAllMessage.style.color = 'red';
+				unlockAllMessage.textContent = error.message || 'Failed to unlock items.';
+				unlockAllButton.disabled = false;
+			}
+		});
 
 		function markEquippedItem(listSelector, itemId) {
 			if (!itemId) return;
