@@ -5,11 +5,25 @@ import { PaddleCommon } from '../../public/game/common/PaddleCommon.js';
 import { PaddleController } from './PaddleController.js';
 import { GameState, Player } from '../../public/game/common/GameState.js';
 import { BallServer } from './BallServer.js';
+import { RollbackBuffer } from './RollbackBuffer.js';
 import db from '../db/db.js';
 
 const SYNC_INTERVAL = 5;
 const RESPAWN_COUNTDOWN_MS = 3000;
 const DEFAULT_ELO = 1000;
+const FIXED_SIMULATION_STEP = 1 / Constants.SIMULATION_RATE;
+const FIXED_SIMULATION_STEP_MS = FIXED_SIMULATION_STEP * 1000;
+const MAX_SERVER_CATCHUP_STEPS = 8;
+export const MAX_ROLLBACK_TICKS = Math.round(0.15 * Constants.SIMULATION_RATE);
+const ROLLBACK_HISTORY_STATES = MAX_ROLLBACK_TICKS + 2;
+
+export function getRollbackTicks(rttMs) {
+	if (!Number.isFinite(rttMs) || rttMs <= 0) return 0;
+	return Math.min(
+		Math.ceil(rttMs / 2 / FIXED_SIMULATION_STEP_MS),
+		MAX_ROLLBACK_TICKS
+	);
+}
 
 export default class ServerScene extends Scene {
 	#interval = null;
@@ -24,6 +38,19 @@ export default class ServerScene extends Scene {
 	#gameEnded = false;
 	#ballSkinKey = 0;
 	#servingPlayer = null;
+	#serverTick = 0;
+	#simulationTick = 0;
+	#rollbackBarrierTick = 0;
+	#history = new RollbackBuffer(ROLLBACK_HISTORY_STATES);
+	#pendingInputs = [];
+	#pendingGoal = null;
+	#rollbackStats = {
+		rollbacks: 0,
+		replayedTicks: 0,
+		maxRewindTicks: 0,
+		invalidatedGoals: 0,
+		cappedLatencyInputs: 0
+	};
 
 	constructor(socket, lives, onGameEnd) {
 		super(new GameState());
@@ -35,31 +62,9 @@ export default class ServerScene extends Scene {
 		// Order matters: Sync with public/main.js
 		this.registerGameObject(new ArenaCommon('gameArena'));
 
-		this.#ball = new BallServer('ball', (ball, wall) => {
-			if (this.#gameOver || this.#respawn || !wall?.player) return;
-
-			wall.player.lives = Math.max(0, wall.player.lives - 1);
-
-			const scoredOnPlayer = wall.player;
-			const scorer = [...this.state.players.values()].find(
-				(player) => player !== scoredOnPlayer
-			);
-			if (scorer) {
-				this.#socket.broadcast({
-					type: 'goalScored',
-					scorer: scorer.username,
-					goalExplosionKey: scorer.goalExplosionKey,
-					position: [...ball.x]
-				});
-			}
-
-			if (wall.player.lives > 0) {
-				this.#startServe(scoredOnPlayer, false, scorer);
-				return;
-			}
-
-			this.#endGame(wall.player.username);
-		});
+		this.#ball = new BallServer('ball', (ball, wall) =>
+			this.#queueGoalCandidate(ball, wall)
+		);
 
 		this.registerGameObject(this.#ball);
 
@@ -84,50 +89,36 @@ export default class ServerScene extends Scene {
 		socket.addHandler('start', this.#startGame.bind(this));
 
 		this.#numLives = lives ?? 7;
+		this.#recordHistory(this.#serverTick);
 	}
 
 	start() {
+		if (this.#interval) return;
+
 		let lastTime = performance.now();
-		let ct = 0;
+		let accumulator = 0;
+		this.#sendSync();
+
 		this.#interval = setInterval(() => {
 			const now = performance.now();
-			const delta = (now - lastTime) / 1000;
+			const elapsed = Math.max(0, (now - lastTime) / 1000);
+			accumulator = Math.min(
+				accumulator + elapsed,
+				FIXED_SIMULATION_STEP * MAX_SERVER_CATCHUP_STEPS
+			);
 
-			this.step(delta);
-			this.#updateRespawnState();
-
-			if (ct % SYNC_INTERVAL === 0) {
-				const physicsState = this.state.physics.exportState();
-				const gatherData = {};
-				for (const [username, player] of this.state.players)
-					gatherData[username] = {
-						lives: player.lives
-					};
-
-				this.#socket.forEachClient((username, ws) => {
-					const paddleController =
-						this.state.players.get(username)?.paddle.controller;
-					const ack = paddleController?.ack ?? -1;
-
-					this.#socket.safeSend(ws, {
-						type: 'sync',
-						ack,
-						active: this.#ball.enabled,
-						physics: physicsState,
-						gameInfo: gatherData,
-						gameOver: this.#gameOver,
-						serverTs: Date.now(),
-						respawnEndsAt: this.#respawn?.endAt ?? null,
-						respawnScorer: this.#respawn?.scorer ?? null,
-						matchStarted: this.#matchStarted,
-						ballSkinKey: this.#ballSkinKey
-					});
-				});
+			let steps = 0;
+			while (
+				accumulator >= FIXED_SIMULATION_STEP &&
+				steps < MAX_SERVER_CATCHUP_STEPS
+			) {
+				this.advanceTick();
+				accumulator -= FIXED_SIMULATION_STEP;
+				steps++;
 			}
 
 			lastTime = now;
-			ct++;
-		}, 1000 / Constants.SIMULATION_RATE);
+		}, FIXED_SIMULATION_STEP_MS);
 	}
 
 	stop() {
@@ -137,6 +128,258 @@ export default class ServerScene extends Scene {
 
 	get inProgress() {
 		return this.#inProgress;
+	}
+
+	get serverTick() {
+		return this.#serverTick;
+	}
+
+	get goalPending() {
+		return this.#pendingGoal !== null;
+	}
+
+	get rollbackStats() {
+		return { ...this.#rollbackStats };
+	}
+
+	/** Advance exactly one authoritative fixed simulation tick. */
+	advanceTick() {
+		this.#processPendingInputs();
+		this.#commitPendingGoalIfReady();
+		this.#updateRespawnState();
+
+		if (!this.#history.get(this.#serverTick)) {
+			this.#recordHistory(this.#serverTick);
+		}
+
+		this.#simulateTick(this.#serverTick);
+		this.#serverTick++;
+		this.#recordHistory(this.#serverTick);
+		this.#pruneInputHistory();
+
+		if (this.#serverTick % SYNC_INTERVAL === 0) this.#sendSync();
+	}
+
+	#simulateTick(tick) {
+		this.#simulationTick = tick;
+		for (const player of this.state.players.values()) {
+			player.paddle.controller?.setSimulationTick(tick);
+		}
+		super.step(FIXED_SIMULATION_STEP);
+	}
+
+	#captureState() {
+		return {
+			physics: this.state.physics.exportState(),
+			physicsTime: this.state.physics.t,
+			ballEnabled: this.#ball.enabled,
+			ballSpeed: this.#ball.speed,
+			ballIsTrigger: this.#ball.body.isTrigger,
+			pendingGoal: this.#pendingGoal
+				? {
+						...this.#pendingGoal,
+						position: [...this.#pendingGoal.position]
+					}
+				: null
+		};
+	}
+
+	#restoreState(state) {
+		this.state.physics.importState(state.physics);
+		this.state.physics.t = state.physicsTime;
+		this.#ball.enabled = state.ballEnabled;
+		this.#ball.speed = state.ballSpeed;
+		this.#ball.body.isTrigger = state.ballIsTrigger;
+		this.#pendingGoal = state.pendingGoal
+			? {
+					...state.pendingGoal,
+					position: [...state.pendingGoal.position]
+				}
+			: null;
+	}
+
+	#recordHistory(tick) {
+		this.#history.set(tick, this.#captureState());
+	}
+
+	#resetRollbackHistory() {
+		this.#rollbackBarrierTick = this.#serverTick;
+		this.#history.clear();
+		this.#recordHistory(this.#serverTick);
+		for (const player of this.state.players.values()) {
+			player.paddle.controller?.pruneBefore(this.#serverTick);
+		}
+	}
+
+	#pruneInputHistory() {
+		const oldestTick = this.#history.oldestTick;
+		if (oldestTick === null) return;
+		for (const player of this.state.players.values()) {
+			player.paddle.controller?.pruneBefore(oldestTick);
+		}
+	}
+
+	#processPendingInputs() {
+		if (this.#pendingInputs.length === 0) return;
+
+		const pendingInputs = this.#pendingInputs.splice(0);
+		let earliestChangedTick = null;
+		const rollbackEnabled =
+			this.#inProgress &&
+			this.#matchStarted &&
+			!this.#respawn &&
+			!this.#gameOver;
+
+		for (const queued of pendingInputs) {
+			const player = this.state.players.get(queued.username);
+			const controller = player?.paddle.controller;
+			if (!controller) continue;
+
+			let requestedRewindTicks = 0;
+			if (rollbackEnabled && Number.isFinite(queued.rttMs)) {
+				requestedRewindTicks = Math.ceil(
+					queued.rttMs / 2 / FIXED_SIMULATION_STEP_MS
+				);
+			}
+
+			if (requestedRewindTicks > MAX_ROLLBACK_TICKS) {
+				this.#rollbackStats.cappedLatencyInputs++;
+			}
+
+			const rewindTicks = getRollbackTicks(queued.rttMs);
+			const oldestTick = this.#history.oldestTick ?? this.#serverTick;
+			const targetTick = Math.max(
+				this.#rollbackBarrierTick,
+				oldestTick,
+				this.#serverTick - rewindTicks
+			);
+
+			const changedHistory = controller.insertInput(queued.input, targetTick);
+			if (
+				changedHistory &&
+				targetTick < this.#serverTick &&
+				(earliestChangedTick === null || targetTick < earliestChangedTick)
+			) {
+				earliestChangedTick = targetTick;
+			}
+		}
+
+		if (earliestChangedTick !== null) {
+			this.#rollbackAndReplay(earliestChangedTick);
+		}
+	}
+
+	#rollbackAndReplay(fromTick) {
+		const state = this.#history.get(fromTick);
+		if (!state) return;
+
+		const endTick = this.#serverTick;
+		const hadPendingGoal = this.#pendingGoal !== null;
+		this.#restoreState(state);
+		this.#history.deleteFrom(fromTick);
+
+		try {
+			for (let tick = fromTick; tick < endTick; tick++) {
+				this.#recordHistory(tick);
+				this.#simulateTick(tick);
+				this.#recordHistory(tick + 1);
+			}
+		} finally {
+			this.#simulationTick = this.#serverTick;
+		}
+
+		const replayedTicks = endTick - fromTick;
+		this.#rollbackStats.rollbacks++;
+		this.#rollbackStats.replayedTicks += replayedTicks;
+		this.#rollbackStats.maxRewindTicks = Math.max(
+			this.#rollbackStats.maxRewindTicks,
+			replayedTicks
+		);
+		if (hadPendingGoal && this.#pendingGoal === null) {
+			this.#rollbackStats.invalidatedGoals++;
+		}
+	}
+
+	#queueGoalCandidate(ball, wall) {
+		if (this.#gameOver || this.#respawn || this.#pendingGoal || !wall?.player) {
+			return;
+		}
+
+		this.#pendingGoal = {
+			tick: this.#simulationTick + 1,
+			scoredOn: wall.player.username,
+			position: [...ball.x]
+		};
+		ball.v.zero();
+		ball.isTrigger = true;
+	}
+
+	#commitPendingGoalIfReady() {
+		if (
+			!this.#pendingGoal ||
+			this.#serverTick - this.#pendingGoal.tick < MAX_ROLLBACK_TICKS
+		) {
+			return;
+		}
+
+		const pendingGoal = this.#pendingGoal;
+		this.#pendingGoal = null;
+		this.#ball.body.isTrigger = false;
+
+		const scoredOnPlayer = this.state.players.get(pendingGoal.scoredOn);
+		if (!scoredOnPlayer) {
+			this.#resetRollbackHistory();
+			return;
+		}
+
+		scoredOnPlayer.lives = Math.max(0, scoredOnPlayer.lives - 1);
+		const scorer = [...this.state.players.values()].find(
+			(player) => player !== scoredOnPlayer
+		);
+		if (scorer) {
+			this.#socket.broadcast({
+				type: 'goalScored',
+				scorer: scorer.username,
+				goalExplosionKey: scorer.goalExplosionKey,
+				position: [...pendingGoal.position]
+			});
+		}
+
+		if (scoredOnPlayer.lives > 0) {
+			this.#startServe(scoredOnPlayer, false, scorer);
+			return;
+		}
+
+		this.#endGame(scoredOnPlayer.username);
+	}
+
+	#sendSync() {
+		const physicsState = this.state.physics.exportState();
+		const gameInfo = {};
+		for (const [username, player] of this.state.players) {
+			gameInfo[username] = { lives: player.lives };
+		}
+		const serverTs = Date.now();
+
+		this.#socket.forEachClient((username, ws) => {
+			const paddleController =
+				this.state.players.get(username)?.paddle.controller;
+			this.#socket.safeSend(ws, {
+				type: 'sync',
+				ack: paddleController?.ack ?? -1,
+				active: this.#ball.enabled,
+				physics: physicsState,
+				gameInfo,
+				gameOver: this.#gameOver,
+				serverTs,
+				serverTick: this.#serverTick,
+				goalPending: this.#pendingGoal !== null,
+				respawnEndsAt: this.#respawn?.endAt ?? null,
+				respawnScorer: this.#respawn?.scorer ?? null,
+				matchStarted: this.#matchStarted,
+				ballSkinKey: this.#ballSkinKey
+			});
+		});
 	}
 
 	#onConnect(username) {
@@ -294,7 +537,16 @@ export default class ServerScene extends Scene {
 	}
 
 	#recvMove(socket, username, ws, msg) {
-		this.state.players.get(username)?.paddle.controller.enqueueInput(msg);
+		const controller =
+			this.state.players.get(username)?.paddle.controller ?? null;
+		const input = controller?.acceptInput(msg);
+		if (!input) return;
+
+		this.#pendingInputs.push({
+			username,
+			input,
+			rttMs: socket.getRttMs?.(username) ?? null
+		});
 	}
 
 	#updateRespawnState() {
@@ -305,10 +557,13 @@ export default class ServerScene extends Scene {
 		this.#ball.serve();
 		this.#ball.setServer(null);
 		this.#respawn = null;
+		this.#resetRollbackHistory();
 	}
 
 	#endGame(loser) {
 		this.#gameEnded = true;
+		this.#pendingGoal = null;
+		this.#ball.body.isTrigger = false;
 
 		const winner = [...this.state.players.values()].find(
 			(player) => player.username !== loser
@@ -316,6 +571,7 @@ export default class ServerScene extends Scene {
 
 		this.#gameOver = { loser, winner, ratings: null };
 		this.#ball.enabled = false;
+		this.#resetRollbackHistory();
 		this.#saveGameResult().then(() => {
 			this.#socket.broadcast({
 				type: 'gameOver',
@@ -481,6 +737,8 @@ export default class ServerScene extends Scene {
 	}
 
 	#startServe(playerObj, initial = false, scorer = null) {
+		this.#pendingGoal = null;
+		this.#ball.body.isTrigger = false;
 		this.#servingPlayer = playerObj;
 		this.#ballSkinKey = Number.isFinite(playerObj.ballSkinKey)
 			? playerObj.ballSkinKey
@@ -490,5 +748,6 @@ export default class ServerScene extends Scene {
 			endAt: Date.now() + RESPAWN_COUNTDOWN_MS,
 			scorer: initial ? null : (scorer?.username ?? null)
 		};
+		this.#resetRollbackHistory();
 	}
 }

@@ -31,7 +31,7 @@ export class Ball extends BallCommon {
 				(identifier !== 'greenWall' && identifier !== 'redWall')
 			)
 				return;
-			if (this.scene?.isReplaying) return;
+			if (this.scene?.isReplaying || this.scene?.goalPending) return;
 
 			this.scene?.getGameObject('cameraController')?.addShake(0.5, 1000);
 		}).bind(this);

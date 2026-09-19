@@ -38,7 +38,13 @@ export class Arena extends ArenaCommon {
 
 			body.col.onCollisionCallback = (me, other) => {
 				const ball = this.#ball ?? this.#scene?.getGameObject('ball');
-				if (!ball || other !== ball.body || this.#scene?.isReplaying) return;
+				if (
+					!ball ||
+					other !== ball.body ||
+					this.#scene?.isReplaying ||
+					this.#scene?.goalPending
+				)
+					return;
 
 				this.#ball = ball;
 				const collision = this.#resolveCollisionDetails(

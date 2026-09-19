@@ -1,6 +1,18 @@
 import EventEmitter from 'node:events';
 import { WebSocketServer } from 'ws';
 
+const LATENCY_SAMPLE_INTERVAL_MS = 1000;
+const LATENCY_EWMA_ALPHA = 0.2;
+const MAX_LATENCY_SAMPLE_MS = 10_000;
+
+export function smoothRtt(previousRtt, sampleRtt) {
+	if (!Number.isFinite(sampleRtt) || sampleRtt < 0) return previousRtt ?? null;
+	if (!Number.isFinite(previousRtt)) return sampleRtt;
+	return (
+		previousRtt * (1 - LATENCY_EWMA_ALPHA) + sampleRtt * LATENCY_EWMA_ALPHA
+	);
+}
+
 /*
  * How to use:
  * - Construct with HTTP server instance (see index.js) and path to websocket
@@ -19,7 +31,10 @@ export default class PongSocketServer extends EventEmitter {
 	#wss = null;
 	#wsByUsername = new Map();
 	#userIdByUsername = new Map();
+	#latencyByUsername = new Map();
 	#upgradeHandler = null;
+	#latencyPingInterval = null;
+	#nextLatencyPingId = 0;
 
 	#handlers = new Map();
 
@@ -65,6 +80,22 @@ export default class PongSocketServer extends EventEmitter {
 
 			this.#wsByUsername.set(username, ws);
 			this.#userIdByUsername.set(username, userId);
+			this.#latencyByUsername.set(username, {
+				rttMs: null,
+				pending: new Map()
+			});
+
+			ws.on('pong', (payload) => {
+				if (this.#wsByUsername.get(username) !== ws) return;
+				const latency = this.#latencyByUsername.get(username);
+				const sentAt = latency?.pending.get(payload.toString());
+				if (!Number.isFinite(sentAt)) return;
+
+				latency.pending.delete(payload.toString());
+				const sample = performance.now() - sentAt;
+				if (sample > MAX_LATENCY_SAMPLE_MS) return;
+				latency.rttMs = smoothRtt(latency.rttMs, sample);
+			});
 
 			ws.on('message', (raw) => {
 				const text = raw.toString();
@@ -99,14 +130,23 @@ export default class PongSocketServer extends EventEmitter {
 			});
 
 			this.emit('client:connect', username);
+			this.#sendLatencyPing(username, ws);
 
 			ws.on('close', () => {
 				if (this.#wsByUsername.get(username) !== ws) return;
 				this.emit('client:disconnect', username);
 				this.#wsByUsername.delete(username);
 				this.#userIdByUsername.delete(username);
+				this.#latencyByUsername.delete(username);
 			});
 		});
+
+		this.#latencyPingInterval = setInterval(() => {
+			for (const [username, ws] of this.#wsByUsername) {
+				this.#sendLatencyPing(username, ws);
+			}
+		}, LATENCY_SAMPLE_INTERVAL_MS);
+		this.#latencyPingInterval.unref?.();
 	}
 
 	broadcast(obj) {
@@ -134,6 +174,10 @@ export default class PongSocketServer extends EventEmitter {
 	}
 
 	stop() {
+		if (this.#latencyPingInterval) {
+			clearInterval(this.#latencyPingInterval);
+			this.#latencyPingInterval = null;
+		}
 		this.#wss.clients.forEach((ws) => {
 			ws.close();
 		});
@@ -154,6 +198,10 @@ export default class PongSocketServer extends EventEmitter {
 		return this.#userIdByUsername.get(username);
 	}
 
+	getRttMs(username) {
+		return this.#latencyByUsername.get(username)?.rttMs ?? null;
+	}
+
 	disconnectUser(username, code = 4000, reason = 'Disconnected by server') {
 		const ws = this.#wsByUsername.get(username);
 		if (!ws) return false;
@@ -163,5 +211,21 @@ export default class PongSocketServer extends EventEmitter {
 
 	#ping(socket, username, ws, msg) {
 		return { type: 'pong', serverTs: Date.now(), clientTs: msg.clientTs };
+	}
+
+	#sendLatencyPing(username, ws) {
+		if (ws.readyState !== ws.OPEN || typeof ws.ping !== 'function') return;
+
+		const latency = this.#latencyByUsername.get(username);
+		if (!latency) return;
+
+		const now = performance.now();
+		for (const [id, sentAt] of latency.pending) {
+			if (now - sentAt > MAX_LATENCY_SAMPLE_MS) latency.pending.delete(id);
+		}
+
+		const id = String(this.#nextLatencyPingId++);
+		latency.pending.set(id, now);
+		ws.ping(id);
 	}
 }

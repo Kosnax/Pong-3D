@@ -30,6 +30,7 @@ export class AnimatedScene extends Scene {
 		this.respawnEndsAt = null;
 		this.respawnScorer = null;
 		this.matchStarted = false;
+		this.goalPending = false;
 		this.serverTimeOffsetMs = 0;
 		this.unlockedItem = null;
 		this.renderer = new THREE.WebGLRenderer();
@@ -278,6 +279,8 @@ export class AnimatedScene extends Scene {
 		this.respawnScorer =
 			typeof msg.respawnScorer === 'string' ? msg.respawnScorer : null;
 		this.matchStarted = msg.matchStarted === true;
+		this.goalPending = msg.goalPending === true;
+		this.#ball.body.isTrigger = this.goalPending;
 		this.#updateServerTimeOffset(msg.serverTs);
 		const snapshotPredictionSeconds = getSnapshotPredictionSeconds(
 			msg.serverTs,
@@ -331,7 +334,7 @@ export class AnimatedScene extends Scene {
 			player.paddle.constrainToBounds();
 		}
 
-		if (!this.#ball.enabled) return;
+		if (!this.#ball.enabled || this.goalPending) return;
 
 		// Ball prediction needs collisions, but collision resolution can impart a
 		// tiny impulse to nominally static walls/paddles. Restore every other body
