@@ -20,27 +20,39 @@ body > canvas {
 }
 
 #chat {
-	background: rgba(0, 0, 0, 25%);
+	background: rgba(0, 0, 0, 0.32);
 	position: absolute;
 	top: 0;
 	left: 0;
-	padding: 1rem;
-	z-index: 1000000;
+	padding: 0.65rem;
+	z-index: 1200;
+	backdrop-filter: blur(0.3rem);
 }
 
 #chat__text {
 	margin: 0;
 	color: white;
 	font-size: 0.9rem;
-	height: 8rem;
-	width: 33vw;
-	height: 20vh;
+	width: min(22rem, 42vw);
+	height: 0;
+	opacity: 0;
 	overflow-y: auto;
 	white-space: pre-wrap;
+	transition:
+		height 0.18s ease,
+		opacity 0.18s ease,
+		margin 0.18s ease;
+}
+
+#chat:focus-within #chat__text,
+#chat.has-recent-message #chat__text {
+	height: min(7rem, 18vh);
+	opacity: 1;
+	margin-bottom: 0.4rem;
 }
 
 #chat__box {
-	width: 100%;
+	width: min(18rem, 38vw);
 	background: transparent;
 	color: white;
 	border: 1px solid grey;
@@ -115,7 +127,8 @@ body > canvas {
 	top: 1rem;
 	left: 50%;
 	transform: translateX(-50%);
-	font-size: 1.5rem;
+	font-size: clamp(1rem, 2.4vw, 1.5rem);
+	z-index: 1000;
 }
 
 #hud-stats {
@@ -123,6 +136,34 @@ body > canvas {
 	top: 1rem;
 	right: 1rem;
 	font-size: 0.8rem;
+	display: none;
+	z-index: 1000;
+}
+
+body.show-debug #hud-stats {
+	display: block;
+}
+
+#hud-help-button {
+	position: absolute;
+	top: 1rem;
+	right: 1rem;
+	z-index: 1001;
+	width: auto;
+	padding: 0.35rem 0.65rem;
+	border: 1px solid rgba(255, 255, 255, 0.28);
+	background: rgba(0, 0, 0, 0.42);
+	color: white;
+	box-shadow: none;
+}
+
+#hud-spectator {
+	position: absolute;
+	bottom: 1rem;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 1000;
+	font-size: 0.85rem;
 }
 
 #hud-countdown {
@@ -174,6 +215,33 @@ body > canvas {
 	font-size: 1.1rem;
 }
 
+.menu-note {
+	margin: 0 0 1rem;
+	color: rgba(255, 255, 255, 0.72);
+	font-size: 0.85rem;
+}
+
+.menu-settings {
+	display: grid;
+	gap: 0.65rem;
+	margin-bottom: 1rem;
+	padding: 0.75rem;
+	border: 1px solid rgba(255, 255, 255, 0.12);
+	background: rgba(255, 255, 255, 0.04);
+}
+
+.menu-settings label {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+	color: white;
+}
+
+.menu-settings input {
+	width: 1rem;
+	height: 1rem;
+}
+
 #escape-menu__actions {
 	display: flex;
 	flex-direction: column;
@@ -213,6 +281,146 @@ body > canvas {
 	background: rgba(235, 87, 87, 0.5);
 }
 
+#controls-help {
+	position: fixed;
+	inset: 0;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	background: rgba(2, 5, 14, 0.78);
+	backdrop-filter: blur(0.45rem);
+	z-index: 2100;
+}
+
+#controls-help.is-open {
+	display: flex;
+}
+
+#controls-help__card {
+	width: min(92vw, 34rem);
+	padding: 1.5rem;
+	background: rgba(12, 16, 29, 0.98);
+	border: 1px solid rgba(124, 240, 255, 0.35);
+	box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.55);
+}
+
+#controls-help__card h2 {
+	margin: 0 0 1rem;
+	font-size: 1.6rem;
+}
+
+#controls-help__card ul {
+	margin: 0 0 1.25rem;
+	padding-left: 1.25rem;
+	line-height: 1.5;
+}
+
+#practice-score {
+	position: absolute;
+	top: 1rem;
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 1000;
+	font-size: clamp(1rem, 2.5vw, 1.5rem);
+}
+
+#practice-message {
+	position: absolute;
+	top: 50%;
+	left: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 1000;
+	font-size: clamp(1.2rem, 4vw, 2rem);
+	text-align: center;
+}
+
+#practice-exit {
+	position: absolute;
+	right: 1rem;
+	bottom: 1rem;
+	z-index: 1001;
+	width: auto;
+	background: rgba(0, 0, 0, 0.48);
+	color: white;
+	text-decoration: none;
+}
+
+.practice-overlay {
+	position: fixed;
+	inset: 0;
+	display: none;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	background: radial-gradient(
+		circle at center,
+		rgba(5, 12, 31, 0.72),
+		rgba(2, 4, 12, 0.94)
+	);
+	backdrop-filter: blur(0.45rem);
+	z-index: 2200;
+}
+
+.practice-overlay.is-open {
+	display: flex;
+}
+
+.practice-card {
+	width: min(92vw, 38rem);
+	padding: clamp(1.25rem, 4vw, 2rem);
+	border: 1px solid rgba(124, 240, 255, 0.35);
+	background: rgba(12, 16, 29, 0.97);
+	box-shadow: 0 1rem 4rem rgba(0, 0, 0, 0.58);
+}
+
+.practice-card h1,
+.practice-card h2 {
+	margin: 0 0 0.75rem;
+	font-size: clamp(1.8rem, 6vw, 2.7rem);
+}
+
+.practice-card ul {
+	padding-left: 1.25rem;
+	line-height: 1.45;
+}
+
+.practice-card .game-button {
+	display: block;
+	margin-top: 0.65rem;
+	text-align: center;
+	text-decoration: none;
+}
+
+.practice-secondary {
+	background: rgba(255, 255, 255, 0.08);
+	color: white;
+}
+
+.practice-settings {
+	display: grid;
+	gap: 0.55rem;
+	margin: 1rem 0;
+}
+
+.practice-settings label {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+}
+
+.practice-settings input {
+	width: 1rem;
+	height: 1rem;
+}
+
+.eyebrow {
+	margin: 0 0 0.35rem;
+	color: #7cf0ff;
+	font-size: 0.78rem;
+	letter-spacing: 0.14em;
+}
+
 .touch-joystick-zone {
 	position: fixed;
 	inset: 0;
@@ -226,4 +434,50 @@ body > canvas {
 .touch-joystick-zone .front,
 .touch-joystick-zone .back {
 	will-change: transform, opacity;
+}
+
+@media (max-width: 700px) {
+	#chat {
+		padding: 0.45rem;
+	}
+
+	#chat__text {
+		width: min(76vw, 20rem);
+	}
+
+	#chat__box {
+		width: min(68vw, 17rem);
+	}
+
+	#hud-score {
+		top: calc(0.5rem + env(safe-area-inset-top));
+	}
+
+	#hud-help-button {
+		top: calc(0.5rem + env(safe-area-inset-top));
+		right: calc(0.5rem + env(safe-area-inset-right));
+	}
+
+	#hud-spectator {
+		bottom: calc(0.5rem + env(safe-area-inset-bottom));
+		max-width: 90vw;
+		white-space: normal;
+		text-align: center;
+	}
+
+	#waiting__card {
+		width: min(92vw, 60ch);
+		padding: 1.25rem;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		scroll-behavior: auto !important;
+		transition-duration: 0.01ms !important;
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+	}
 }

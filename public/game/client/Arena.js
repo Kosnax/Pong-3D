@@ -45,6 +45,7 @@ export class Arena extends ArenaCommon {
 					this.#scene?.goalPending
 				)
 					return;
+				if (this.#scene?.reducedEffects) return;
 
 				this.#ball = ball;
 				const collision = this.#resolveCollisionDetails(

@@ -568,8 +568,14 @@ export default class ServerScene extends Scene {
 		const winner = [...this.state.players.values()].find(
 			(player) => player.username !== loser
 		)?.username;
+		const finalLives = Object.fromEntries(
+			[...this.state.players].map(([username, player]) => [
+				username,
+				player.lives
+			])
+		);
 
-		this.#gameOver = { loser, winner, ratings: null };
+		this.#gameOver = { loser, winner, finalLives, ratings: null };
 		this.#ball.enabled = false;
 		this.#resetRollbackHistory();
 		this.#saveGameResult().then(() => {

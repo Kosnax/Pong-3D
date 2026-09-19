@@ -8,6 +8,12 @@
 	</head>
 	<body>
 		<h1 class="game-title"><span>3D</span> <span>Pong</span></h1>
+		<section class="landing-intro" aria-labelledby="quick-start-title">
+			<p class="eyebrow">FAST, PHYSICS-DRIVEN MULTIPLAYER</p>
+			<h2 id="quick-start-title">Defend your goal from every angle.</h2>
+			<p>Warm up against the bot with no sign-in, or enter matchmaking when you are ready.</p>
+			<a class="link-button practice-cta" href="/practice">Practice vs Bot</a>
+		</section>
 
 		<div>
 			<% if (user) { %>
@@ -32,6 +38,7 @@
 			<h2 class="h2-but-h1">Lobbies</h2>
 
 			<div class="card" style="display: flex; flex-direction: column; gap: 1.5rem;">
+				<p id="lobby-status" role="status" aria-live="polite"></p>
 				<div>
 					<button id="random-lobby-button" style="display: block; width: 100%; margin-bottom: 1rem">
 						Start Random Matchmaking
@@ -73,16 +80,23 @@
 					});
 			}
 
+			<% if (user) { %>
 			const nameField = document.getElementById('name-field');
 			const createPublicButton = document.getElementById('create-public-button');
 			const createPrivateButton = document.getElementById('create-private-button');
 			const createLives = document.getElementById('create-lives');
 			const randomLobbyButton = document.getElementById('random-lobby-button');
+			const createButton = document.getElementById('create-button');
+			const lobbyStatus = document.getElementById('lobby-status');
 			const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({
 				'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 			}[character]));
 
 			let lobbyIsPublic = true;
+			const setLobbyStatus = (message, isError = false) => {
+				lobbyStatus.textContent = message;
+				lobbyStatus.classList.toggle('error', isError);
+			};
 			const setLobbyVisibility = (isPublic) => {
 				lobbyIsPublic = isPublic;
 				createPublicButton.classList.toggle('active', isPublic);
@@ -98,19 +112,29 @@
 			});
 
 			async function createLobbyAndRedirect(isPublic = lobbyIsPublic) {
-				const res = await fetch('/api/lobbies', {
-					method: 'POST',
-					body: JSON.stringify({
-						name: nameField.value.length ? nameField.value : undefined,
-						isPublic,
-						lives: parseInt(createLives.value)
-					}),
-					headers: {
-						'Content-Type': 'application/json'
+				createButton.disabled = true;
+				randomLobbyButton.disabled = true;
+				setLobbyStatus('Creating lobby...');
+				try {
+					const res = await fetch('/api/lobbies', {
+						method: 'POST',
+						body: JSON.stringify({
+							name: nameField.value.trim() || undefined,
+							isPublic,
+							lives: Number.parseInt(createLives.value, 10)
+						}),
+						headers: { 'Content-Type': 'application/json' }
+					});
+					const data = await res.json().catch(() => ({}));
+					if (!res.ok || !data.lobby) {
+						throw new Error(data.message || 'Could not create the lobby.');
 					}
-				});
-				const { lobby } = await res.json();
-				window.location = `/game?code=${lobby.code}`;
+					window.location = `/game?code=${data.lobby.code}`;
+				} catch (error) {
+					setLobbyStatus(error.message || 'Could not create the lobby.', true);
+					createButton.disabled = false;
+					randomLobbyButton.disabled = false;
+				}
 			}
 
 			document
@@ -120,35 +144,48 @@
 				});
 
 			randomLobbyButton.addEventListener('click', async (e) => {
-				const res = await fetch('/api/lobbies', { cache: 'no-store' });
-				const { lobbies } = await res.json();
+				try {
+					setLobbyStatus('Finding an open match...');
+					const res = await fetch('/api/lobbies', { cache: 'no-store' });
+					if (!res.ok) throw new Error('Matchmaking is temporarily unavailable.');
+					const { lobbies = [] } = await res.json();
 
-				if (lobbies.length) {
-					const randomLobby = lobbies[Math.floor(Math.random() * lobbies.length)];
-					join(randomLobby.code);
-					return;
+					if (lobbies.length) {
+						const randomLobby = lobbies[Math.floor(Math.random() * lobbies.length)];
+						join(randomLobby.code);
+						return;
+					}
+
+					await createLobbyAndRedirect(true);
+				} catch (error) {
+					setLobbyStatus(error.message || 'Matchmaking failed.', true);
 				}
-
-				await createLobbyAndRedirect(true);
 			});
 
 			const codeField = document.getElementById('code-field');
 			document.getElementById('join-button').addEventListener('click', (e) => {
-				if (!codeField.value.length) {
-					alert("Enter a code first!");
+				const code = codeField.value.trim().toUpperCase();
+				if (!/^[A-Z0-9]{5}$/.test(code)) {
+					setLobbyStatus('Enter a five-character join code.', true);
 					return;
 				}
-				window.location = `/game?code=${codeField.value}`;
+				window.location = `/game?code=${encodeURIComponent(code)}`;
+			});
+			codeField.addEventListener('input', () => {
+				codeField.value = codeField.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 5);
 			});
 
 			function join(code) {
-				window.location = `/game?code=${code}`;
+				window.location = `/game?code=${encodeURIComponent(code)}`;
 			}
 
 			const lobbiesContainer = document.getElementById('lobbies-container');
 			function refreshLobbies() {
 				fetch('/api/lobbies', { cache: 'no-store' })
-					.then((res) => res.json())
+					.then((res) => {
+						if (!res.ok) throw new Error('Could not refresh open lobbies.');
+						return res.json();
+					})
 					.then((res) => res.lobbies)
 					.then((lobbies) => {
 						if (lobbies.length) {
@@ -167,11 +204,17 @@
 						} else {
 							lobbiesContainer.innerHTML = '<p>No lobbies open currently.</p>';
 						}
+					})
+					.catch((error) => {
+						lobbiesContainer.innerHTML = `<p class="error">${escapeHtml(error.message)}</p>`;
 					});
 			}
 
 			refreshLobbies();
-			setInterval(refreshLobbies, 1000);
+			setInterval(() => {
+				if (!document.hidden) refreshLobbies();
+			}, 5000);
+			<% } %>
 		</script>
 	</body>
 </html>

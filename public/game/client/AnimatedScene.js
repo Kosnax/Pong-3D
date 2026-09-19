@@ -33,33 +33,35 @@ export class AnimatedScene extends Scene {
 		this.goalPending = false;
 		this.serverTimeOffsetMs = 0;
 		this.unlockedItem = null;
+		this.audio = null;
+		this.reducedEffects = false;
 		this.renderer = new THREE.WebGLRenderer();
 		this.renderer.setSize(window.innerWidth, window.innerHeight);
 		this.renderer.shadowMap.enabled = true;
-		this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+		this.renderer.shadowMap.type = THREE.PCFShadowMap;
 		document.body.appendChild(this.renderer.domElement);
 
 		this.scene = new THREE.Scene();
 		this.camera = new THREE.PerspectiveCamera(
-			110,
+			82,
 			window.innerWidth / window.innerHeight,
 			0.1,
 			1000
 		);
 
 		this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-		const cameraDistance = 14;
-		this.controls.minDistance = cameraDistance;
-		this.controls.maxDistance = cameraDistance;
+		this.controls.minDistance = 15;
+		this.controls.maxDistance = 24;
 		this.controls.enablePan = false;
-		this.camera.position.set(0, 0, 0);
-		this.controls.update();
+		this.controls.enableDamping = true;
+		this.controls.dampingFactor = 0.08;
 		this.whichPerson = 0;
 
 		this.filpPerson = ((e) => {
 			if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
 
-			this.whichPerson = (this.whichPerson + 1) % 2;
+			const direction = e.key === 'ArrowRight' ? 1 : -1;
+			this.whichPerson = (this.whichPerson + direction + 3) % 3;
 
 			this.updateOrbitCamera();
 		}).bind(this);
@@ -75,9 +77,10 @@ export class AnimatedScene extends Scene {
 			this.renderer.setSize(window.innerWidth, window.innerHeight);
 		});
 
-		this.camera.position.set(-16, 0, 0);
+		this.camera.position.set(-18, 4, 0);
 		this.camera.up.set(0, 1, 0);
-		this.camera.lookAt(0, 0, 0);
+		this.controls.target.set(0, 0, 0);
+		this.updateOrbitCamera();
 
 		this.physicsAccumulator = 0;
 		this.lastFrameTimeMs = null;
@@ -118,20 +121,27 @@ export class AnimatedScene extends Scene {
 	updateOrbitCamera() {
 		const degreeToRad = Math.PI / 180;
 
-		const verticalDegreesOfFreedom = 10;
-		const horizontalDegreesOfFreedom = 10;
+		if (!this.controls) return;
 
-		this.controls.minPolarAngle =
-			Math.PI / 2 - horizontalDegreesOfFreedom * degreeToRad;
-		this.controls.maxPolarAngle =
-			Math.PI / 2 + horizontalDegreesOfFreedom * degreeToRad;
+		this.controls.target.set(0, 0, 0);
+		if (this.whichPerson === 2) {
+			// A readable three-quarter overview for spectators.
+			this.controls.minPolarAngle = 28 * degreeToRad;
+			this.controls.maxPolarAngle = 72 * degreeToRad;
+			this.controls.minAzimuthAngle = -Infinity;
+			this.controls.maxAzimuthAngle = Infinity;
+			this.camera.position.set(0, 16, 16);
+		} else {
+			const freedom = 18 * degreeToRad;
+			const sign = this.whichPerson === 0 ? -1 : 1;
+			this.controls.minPolarAngle = Math.PI / 2 - freedom;
+			this.controls.maxPolarAngle = Math.PI / 2 + freedom;
+			this.controls.minAzimuthAngle = (sign * Math.PI) / 2 - freedom;
+			this.controls.maxAzimuthAngle = (sign * Math.PI) / 2 + freedom;
+			this.camera.position.set(sign * 18, 4, 0);
+		}
 
-		const sign = this.whichPerson == 0 ? -1 : 1;
-
-		this.controls.minAzimuthAngle =
-			(sign * Math.PI) / 2 - verticalDegreesOfFreedom * degreeToRad;
-		this.controls.maxAzimuthAngle =
-			(sign * Math.PI) / 2 + verticalDegreesOfFreedom * degreeToRad;
+		this.controls.update();
 	}
 
 	get active() {
@@ -274,6 +284,7 @@ export class AnimatedScene extends Scene {
 		this.#ball.enabled = msg.active;
 		this.#ball.setServerSkin(msg.ballSkinKey);
 		this.gameOver = msg.gameOver ?? null;
+		this.#applyFinalLives(this.gameOver?.finalLives);
 		this.respawnEndsAt =
 			typeof msg.respawnEndsAt === 'number' ? msg.respawnEndsAt : null;
 		this.respawnScorer =
@@ -374,11 +385,26 @@ export class AnimatedScene extends Scene {
 
 	#gameOver(msg) {
 		this.gameOver = msg;
+		this.#applyFinalLives(msg.finalLives);
 		this.#ball.enabled = false;
+		const localPlayer = this.state.players.has(this.username);
+		this.audio?.playGameOver(localPlayer ? msg.winner === this.username : null);
 	}
 
 	#goalScored(msg) {
-		this.#ball.triggerGoalExplosion(msg.goalExplosionKey, msg.position);
+		if (!this.reducedEffects) {
+			this.#ball.triggerGoalExplosion(msg.goalExplosionKey, msg.position);
+		}
+		this.audio?.playGoal();
+	}
+
+	#applyFinalLives(finalLives) {
+		if (!finalLives || typeof finalLives !== 'object') return;
+		for (const [username, lives] of Object.entries(finalLives)) {
+			const player = this.state.players.get(username);
+			if (player && Number.isFinite(Number(lives)))
+				player.lives = Number(lives);
+		}
 	}
 
 	get isHost() {

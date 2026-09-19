@@ -5,6 +5,7 @@ import { GameObjectCustom } from './game/common/GameObject.js';
 import PongSocketClient from './socket.js';
 import { initChat } from './chat.js';
 import { startGoalExplosionDemo } from './game/goalExplosionDemo.js';
+import { GameAudio } from './game/audio.js';
 
 function escapeHtml(value) {
 	return String(value ?? '').replace(/[&<>"']/g, (character) => {
@@ -29,6 +30,40 @@ socket.connect();
 
 const animatedScene = new AnimatedScene(socket);
 window.animatedScene = animatedScene;
+
+function getStoredBoolean(key, fallback = false) {
+	try {
+		const value = localStorage.getItem(key);
+		return value === null ? fallback : value === 'true';
+	} catch {
+		return fallback;
+	}
+}
+
+function setStoredBoolean(key, value) {
+	try {
+		localStorage.setItem(key, String(Boolean(value)));
+	} catch {
+		// Preferences are best-effort when storage is unavailable.
+	}
+}
+
+const prefersReducedMotion = window.matchMedia?.(
+	'(prefers-reduced-motion: reduce)'
+)?.matches;
+const gameAudio = new GameAudio({
+	muted: getStoredBoolean('pongMuted', false)
+});
+animatedScene.audio = gameAudio;
+animatedScene.reducedEffects = getStoredBoolean(
+	'pongReducedEffects',
+	prefersReducedMotion
+);
+
+window.addEventListener('pointerdown', () => gameAudio.unlock(), {
+	once: true
+});
+window.addEventListener('keydown', () => gameAudio.unlock(), { once: true });
 
 function getRespawnCountdownSeconds() {
 	const respawnEndsAt = animatedScene.respawnEndsAt;
@@ -77,16 +112,18 @@ animatedScene.registerGameObject(
 			document.body.appendChild(this.self);
 		},
 		update() {
-			// works for two players only
-			const selfPlayer = animatedScene.state.players.get(
-				animatedScene.username
-			);
-			const otherPlayer = animatedScene.state.players
-				.values()
-				.find((p) => p.username !== animatedScene.username);
-			if (selfPlayer && otherPlayer) {
+			const players = [...animatedScene.state.players.values()];
+			if (players.length >= 2) {
+				const localIndex = players.findIndex(
+					(player) => player.username === animatedScene.username
+				);
+				if (localIndex > 0) {
+					const [localPlayer] = players.splice(localIndex, 1);
+					players.unshift(localPlayer);
+				}
+				const [first, second] = players;
 				this.self.style.display = '';
-				this.self.textContent = `${selfPlayer.lives} - ${otherPlayer.lives}`;
+				this.self.textContent = `${first.username} ${first.lives} — ${second.lives} ${second.username}`;
 			} else {
 				this.self.style.display = 'none';
 			}
@@ -96,6 +133,7 @@ animatedScene.registerGameObject(
 		self: document.createElement('div'),
 		scorerText: document.createElement('div'),
 		countdownText: document.createElement('div'),
+		lastCountdown: null,
 		init() {
 			this.self.id = 'hud-countdown';
 			this.self.classList.add('hud-overlay');
@@ -110,6 +148,7 @@ animatedScene.registerGameObject(
 			const scorer = animatedScene.respawnScorer;
 			if (typeof countdown !== 'number' || countdown <= 0) {
 				this.self.style.display = 'none';
+				this.lastCountdown = null;
 				return;
 			}
 
@@ -121,6 +160,10 @@ animatedScene.registerGameObject(
 			this.scorerText.style.display = scoredText ? '' : 'none';
 			this.scorerText.textContent = scoredText;
 			this.countdownText.textContent = `${countdown}`;
+			if (countdown !== this.lastCountdown) {
+				gameAudio.playCountdown(countdown);
+				this.lastCountdown = countdown;
+			}
 		}
 	}),
 	new GameObjectCustom('hudStats', {
@@ -130,6 +173,11 @@ animatedScene.registerGameObject(
 			this.self.id = 'hud-stats';
 			this.self.classList.add('hud-overlay');
 			document.body.appendChild(this.self);
+			window.addEventListener('keydown', (event) => {
+				if (event.code !== 'F3') return;
+				event.preventDefault();
+				document.body.classList.toggle('show-debug');
+			});
 		},
 		update(dt) {
 			const pingText =
@@ -144,12 +192,28 @@ animatedScene.registerGameObject(
 		component: document.getElementById('escape-menu'),
 		resumeButton: document.getElementById('escape-menu__resume'),
 		exitButton: document.getElementById('escape-menu__exit'),
+		helpButton: document.getElementById('escape-menu__help'),
+		note: document.getElementById('escape-menu__note'),
+		muteSetting: document.getElementById('setting-mute'),
+		reduceMotionSetting: document.getElementById('setting-reduce-motion'),
 		setOpen(isOpen) {
+			this.note.textContent = animatedScene.gameOver
+				? 'The match has ended. You can review the result or leave the lobby.'
+				: 'The match continues while this menu is open.';
 			this.component.classList.toggle('is-open', isOpen);
 		},
 		init() {
+			this.muteSetting.checked = gameAudio.muted;
+			this.reduceMotionSetting.checked = animatedScene.reducedEffects;
 			window.addEventListener('keydown', (event) => {
 				if (event.key !== 'Escape') return;
+				if (event.target?.tagName === 'INPUT') return;
+				if (
+					document
+						.getElementById('controls-help')
+						?.classList.contains('is-open')
+				)
+					return;
 				this.setOpen(!this.component.classList.contains('is-open'));
 			});
 
@@ -157,9 +221,89 @@ animatedScene.registerGameObject(
 				this.setOpen(false);
 			});
 
+			this.helpButton.addEventListener('click', () => {
+				this.setOpen(false);
+				document.getElementById('controls-help')?.classList.add('is-open');
+			});
+
+			this.muteSetting.addEventListener('change', () => {
+				gameAudio.setMuted(this.muteSetting.checked);
+				setStoredBoolean('pongMuted', this.muteSetting.checked);
+			});
+
+			this.reduceMotionSetting.addEventListener('change', () => {
+				animatedScene.reducedEffects = this.reduceMotionSetting.checked;
+				setStoredBoolean(
+					'pongReducedEffects',
+					this.reduceMotionSetting.checked
+				);
+			});
+
 			this.exitButton.addEventListener('click', () => {
 				window.location.href = '/';
 			});
+		}
+	}),
+	new GameObjectCustom('controlsHelp', {
+		component: document.getElementById('controls-help'),
+		closeButton: document.getElementById('controls-help__close'),
+		hudButton: document.createElement('button'),
+		autoOpened: false,
+		open() {
+			this.component.classList.add('is-open');
+		},
+		close() {
+			this.component.classList.remove('is-open');
+			setStoredBoolean('pongControlsSeen', true);
+		},
+		init() {
+			this.hudButton.id = 'hud-help-button';
+			this.hudButton.type = 'button';
+			this.hudButton.textContent = 'Controls';
+			document.body.appendChild(this.hudButton);
+			this.hudButton.addEventListener('click', () => this.open());
+			this.closeButton.addEventListener('click', () => this.close());
+			window.addEventListener('keydown', (event) => {
+				if (event.target?.tagName === 'INPUT') return;
+				if (event.key === '?' || event.code === 'KeyH') this.open();
+				if (
+					event.key === 'Escape' &&
+					this.component.classList.contains('is-open')
+				) {
+					event.stopImmediatePropagation();
+					this.close();
+				}
+			});
+		},
+		update() {
+			const hasJoined = animatedScene.state.players.size > 0;
+			this.hudButton.style.display = hasJoined ? '' : 'none';
+			if (
+				hasJoined &&
+				!animatedScene.matchStarted &&
+				!this.autoOpened &&
+				!getStoredBoolean('pongControlsSeen', false)
+			) {
+				this.autoOpened = true;
+				this.open();
+			}
+		}
+	}),
+	new GameObjectCustom('spectatorHint', {
+		self: document.createElement('div'),
+		init() {
+			this.self.id = 'hud-spectator';
+			this.self.classList.add('hud-overlay');
+			this.self.textContent = 'Spectating · ←/→ change camera · drag to orbit';
+			document.body.appendChild(this.self);
+		},
+		update() {
+			const isSpectator =
+				animatedScene.matchStarted &&
+				animatedScene.gameOver === null &&
+				animatedScene.state.players.size >= 2 &&
+				!animatedScene.state.players.has(animatedScene.username);
+			this.self.style.display = isSpectator ? '' : 'none';
 		}
 	}),
 	new GameObjectCustom('waitingScreen', {
@@ -215,13 +359,14 @@ animatedScene.registerGameObject(
 							${Array.from(this.players.keys())
 								.map((name) => {
 									const rating = ratings?.[name];
+									const finalLives = animatedScene.gameOver.finalLives?.[name];
 									const ratingCells = rating
 										? `<td>${rating.before}</td>
 	<td style="color: ${rating.change >= 0 ? 'lightgreen' : 'red'}">${rating.after} (${rating.change >= 0 ? '+' : ''}${rating.change})</td>`
 										: '<td>—</td><td>—</td>';
 									return `<tr>
 	<td>${escapeHtml(name)}</td>
-	<td>${this.players.get(name).lives}${name === winner ? ' (Winner)' : ''}</td>
+	<td>${finalLives ?? this.players.get(name).lives}${name === winner ? ' (Winner)' : ''}</td>
 	${ratingCells}
 </tr>`;
 								})

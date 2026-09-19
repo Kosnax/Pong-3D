@@ -4,8 +4,8 @@
 	<script type="importmap">
 		{
 			"imports": {
-				"three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
-				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+				"three": "https://cdn.jsdelivr.net/npm/three@0.183.1/build/three.module.js",
+				"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.183.1/examples/jsm/"
 			}
 		}
 	</script>
@@ -247,12 +247,6 @@
 				</div>
 			</div>
 
-			<div class="card" style="text-align: center;">
-				<h2>Unlock All Items</h2>
-				<p class="muted">Unlock every paddle skin, ball skin, and goal explosion.</p>
-				<button type="button" id="unlock-all-items">Unlock All Items</button>
-				<p id="unlock-all-items-msg" role="status" aria-live="polite"></p>
-			</div>
 		</section>
 	</div>
 
@@ -473,39 +467,6 @@
 			});
 		}
 
-		const unlockAllButton = document.getElementById('unlock-all-items');
-		const unlockAllMessage = document.getElementById('unlock-all-items-msg');
-
-		unlockAllButton?.addEventListener('click', async () => {
-			unlockAllButton.disabled = true;
-			unlockAllMessage.textContent = 'Unlocking items...';
-			unlockAllMessage.style.color = '';
-
-			try {
-				const response = await fetch('/user/items/unlockAll', {
-					method: 'POST',
-					credentials: 'same-origin'
-				});
-				const data = await response.json();
-
-				if (!response.ok || !data.ok) {
-					throw new Error(data.error || 'Failed to unlock items.');
-				}
-
-				document.querySelectorAll('#profile-panel-library .item.locked').forEach(item => {
-					item.classList.remove('locked');
-					item.disabled = false;
-				});
-				unlockAllMessage.style.color = 'lightgreen';
-				unlockAllMessage.textContent = 'All items unlocked.';
-				unlockAllButton.textContent = 'All Items Unlocked';
-			} catch (error) {
-				unlockAllMessage.style.color = 'red';
-				unlockAllMessage.textContent = error.message || 'Failed to unlock items.';
-				unlockAllButton.disabled = false;
-			}
-		});
-
 		function markEquippedItem(listSelector, itemId) {
 			if (!itemId) return;
 			document.querySelectorAll(`${listSelector} .item`).forEach(el => {
@@ -614,36 +575,41 @@
 					historyEl.innerHTML = '<div class="muted">No games played yet.</div>';
 				} else {
 					games.forEach((game) => {
+						const result = game.result === 'win' ? 'win' : 'loss';
 						const row = document.createElement('div');
-						row.className = `match-row ${game.result}`;
+						row.className = `match-row ${result}`;
 
 						const myChange = Number(game.my_elo_change ?? 0);
 						const oppChange = Number(game.opponent_elo_change ?? 0);
 
-						row.innerHTML = `
-							<div class="match-row-top">
-								<div>
-									<strong>${game.my_display_name}</strong> vs
-									<strong>${game.opponent_display_name}</strong>
-								</div>
-								<div class="match-result ${game.result}">
-									${game.result.toUpperCase()}
-								</div>
-							</div>
+						const top = document.createElement('div');
+						top.className = 'match-row-top';
+						const matchup = document.createElement('div');
+						const myName = document.createElement('strong');
+						myName.textContent = game.my_display_name;
+						const opponentName = document.createElement('strong');
+						opponentName.textContent = game.opponent_display_name;
+						matchup.append(myName, document.createTextNode(' vs '), opponentName);
+						const resultBadge = document.createElement('div');
+						resultBadge.className = `match-result ${result}`;
+						resultBadge.textContent = result.toUpperCase();
+						top.append(matchup, resultBadge);
 
-							<div class="muted">Winner lives remaining: ${game.winner_lives_remaining}</div>
+						const lives = document.createElement('div');
+						lives.className = 'muted';
+						lives.textContent = `Winner lives remaining: ${Number(game.winner_lives_remaining ?? 0)}`;
 
-							<div style="margin-top: 0.5rem;">
-								<div class="elo-pill">
-									You: ${game.my_elo_after}
-									(${myChange >= 0 ? '+' : ''}${myChange})
-								</div>
-								<div class="elo-pill">
-									Opponent: ${game.opponent_elo_after}
-									(${oppChange >= 0 ? '+' : ''}${oppChange})
-								</div>
-							</div>
-						`;
+						const elo = document.createElement('div');
+						elo.style.marginTop = '0.5rem';
+						const myElo = document.createElement('div');
+						myElo.className = 'elo-pill';
+						myElo.textContent = `You: ${Number(game.my_elo_after ?? 0)} (${myChange >= 0 ? '+' : ''}${myChange})`;
+						const opponentElo = document.createElement('div');
+						opponentElo.className = 'elo-pill';
+						opponentElo.textContent = `Opponent: ${Number(game.opponent_elo_after ?? 0)} (${oppChange >= 0 ? '+' : ''}${oppChange})`;
+						elo.append(myElo, opponentElo);
+
+						row.append(top, lives, elo);
 
 						historyEl.appendChild(row);
 					});

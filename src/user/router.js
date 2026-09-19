@@ -173,22 +173,6 @@ export default function createUserRouter() {
 		});
 	});
 
-	router.post('/items/unlockAll', ensureAuth, (req, res) => {
-		db.run(
-			`INSERT OR IGNORE INTO user_unlocks (user_id, item_id, unlocked_at)
-			 SELECT ?, id, CURRENT_TIMESTAMP FROM items`,
-			[req.user.id],
-			(err) => {
-				if (err) {
-					console.error('Failed to unlock all items:', err);
-					return res.status(500).json({ ok: false, error: 'Database error' });
-				}
-
-				return res.json({ ok: true });
-			}
-		);
-	});
-
 	router.post('/items/equipItem', ensureAuth, (req, res) => {
 		const userId = req.user.id;
 		const { itemId, slot } = req.body;

@@ -5,6 +5,7 @@ export default class PongSocketClient {
 	#lastPingTs = null;
 	#lastLatencyMs = null;
 	#testPingHandler = null;
+	#closedPermanently = false;
 
 	#handlers = new Map();
 
@@ -19,6 +20,7 @@ export default class PongSocketClient {
 	}
 
 	connect() {
+		if (this.#closedPermanently) return;
 		if (this.#reconnectTimer) {
 			clearTimeout(this.#reconnectTimer);
 			this.#reconnectTimer = null;
@@ -65,13 +67,17 @@ export default class PongSocketClient {
 		};
 
 		this.#ws.onclose = (event) => {
-			console.log('[ws] closed - will retry');
 			if (this.#pingInterval) {
 				clearInterval(this.#pingInterval);
 				this.#pingInterval = null;
 			}
-			if (event.code === 4001) return;
+			if (event.code >= 4000 && event.code < 4100) {
+				this.#closedPermanently = true;
+				console.log('[ws] closed by server:', event.reason || event.code);
+				return;
+			}
 
+			console.log('[ws] closed - will retry');
 			this.#reconnectTimer = setTimeout(this.connect.bind(this), 1000);
 		};
 
@@ -95,6 +101,15 @@ export default class PongSocketClient {
 
 	get lastLatencyMs() {
 		return this.#lastLatencyMs;
+	}
+
+	disconnect() {
+		this.#closedPermanently = true;
+		if (this.#reconnectTimer) clearTimeout(this.#reconnectTimer);
+		if (this.#pingInterval) clearInterval(this.#pingInterval);
+		this.#reconnectTimer = null;
+		this.#pingInterval = null;
+		this.#ws?.close();
 	}
 
 	#getUrl() {

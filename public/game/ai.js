@@ -1,3 +1,48 @@
+import * as MATH from '../physics/math.js';
+
+/**
+ * Controller-compatible practice opponent for the current physics objects.
+ * It intentionally recenters while the ball is moving away and carries a
+ * small, periodically changing aim error so practice remains winnable.
+ */
+export class PracticeAIController {
+	constructor(paddle, ball, { difficulty = 0.72 } = {}) {
+		this.paddle = paddle;
+		this.ball = ball;
+		this.difficulty = Math.max(0.2, Math.min(1, difficulty));
+		this.error = { y: 0, z: 0 };
+		this.nextErrorAt = 0;
+	}
+
+	getDirection() {
+		const direction = new MATH.Vec3();
+		if (!this.paddle?.body || !this.ball?.body) return direction;
+
+		const now = performance.now();
+		if (now >= this.nextErrorAt) {
+			const errorScale = (1 - this.difficulty) * 2.8;
+			this.error.y = (Math.random() - 0.5) * errorScale;
+			this.error.z = (Math.random() - 0.5) * errorScale;
+			this.nextErrorAt = now + 500 + Math.random() * 350;
+		}
+
+		const approaching = this.ball.body.v.x > 0;
+		const targetY = approaching ? this.ball.body.x.y + this.error.y : 0;
+		const targetZ = approaching ? this.ball.body.x.z + this.error.z : 0;
+		const dy = targetY - this.paddle.body.x.y;
+		const dz = targetZ - this.paddle.body.x.z;
+		const deadZone = approaching ? 0.18 : 0.4;
+
+		if (Math.abs(dy) > deadZone) direction.y = Math.sign(dy);
+		if (Math.abs(dz) > deadZone) direction.z = Math.sign(dz);
+		const magnitude = direction.norm();
+		if (magnitude > 1) direction.scale(1 / magnitude);
+		return direction.scale(0.45 + this.difficulty * 0.55);
+	}
+
+	destroy() {}
+}
+
 export class AI {
 	//usage example
 	//initialize with something like:

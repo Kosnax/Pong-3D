@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover"
+		/>
+		<title>Practice • 3D Pong</title>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://cdn.jsdelivr.net/npm/three@0.183.1/build/three.module.js",
+					"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.183.1/examples/jsm/"
+				}
+			}
+		</script>
+		<link rel="stylesheet" href="/index.css" />
+		<link rel="stylesheet" href="/game.css" />
+	</head>
+	<body class="practice-page">
+		<div id="practice-score" class="hud-overlay">You 3 — 3 Pong Bot</div>
+		<div id="practice-message" class="hud-overlay" aria-live="polite"></div>
+		<a id="practice-exit" class="game-button" href="/">Exit Practice</a>
+
+		<div id="practice-start" class="practice-overlay is-open">
+			<div class="practice-card">
+				<p class="eyebrow">NO SIGN-IN REQUIRED</p>
+				<h1>Practice vs Pong Bot</h1>
+				<p>Learn the 3D movement and serve timing before entering multiplayer.</p>
+				<ul>
+					<li><strong>Move:</strong> WASD, arrow keys, or drag on touch screens.</li>
+					<li><strong>Serve:</strong> move during the countdown to aim.</li>
+					<li><strong>Goal:</strong> protect your blue end of the arena.</li>
+				</ul>
+				<div class="practice-settings">
+					<label><input id="practice-mute" type="checkbox" /> Mute sound</label>
+					<label><input id="practice-reduce-motion" type="checkbox" /> Reduce motion and flashes</label>
+				</div>
+				<button id="practice-start-button" class="game-button">Start Practice</button>
+				<a class="game-button practice-secondary" href="/">Back to Home</a>
+			</div>
+		</div>
+
+		<div id="practice-over" class="practice-overlay">
+			<div class="practice-card">
+				<p class="eyebrow">PRACTICE COMPLETE</p>
+				<h2 id="practice-over-title">You won!</h2>
+				<p id="practice-over-summary"></p>
+				<button id="practice-rematch" class="game-button">Play Again</button>
+				<a class="game-button practice-secondary" href="/">Return to Lobbies</a>
+			</div>
+		</div>
+
+		<script src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.js"></script>
+		<script type="module" src="/practice.js"></script>
+	</body>
+</html>

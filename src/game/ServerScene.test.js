@@ -79,6 +79,10 @@ class FakeSocket extends EventEmitter {
 	getRttMs(username) {
 		return this.rttByUsername.get(username) ?? null;
 	}
+
+	getUserId(username) {
+		return username === 'playerA' ? 101 : 102;
+	}
 }
 
 async function connectPlayers(sceneSocket) {
@@ -162,6 +166,39 @@ describe('ServerScene cosmetics', () => {
 			.at(-1).message;
 		expect(sync.serverTick).toBe(5);
 		expect(sync.goalPending).toBe(true);
+	});
+
+	test('includes authoritative final lives in the game-over event', async () => {
+		const now = jest.spyOn(Date, 'now').mockReturnValue(30_000);
+		const warning = jest.spyOn(console, 'warn').mockImplementation(() => {});
+		try {
+			const socket = new FakeSocket();
+			const scene = new ServerScene(socket, 1);
+			await connectPlayers(socket);
+			socket.receive('playerA', 'start');
+
+			now.mockReturnValue(33_001);
+			scene.advanceTick();
+			const ball = scene.getGameObject('ball');
+			const playerAWall = scene.getGameObject('gameArena').bodies[4];
+			ball.body.col.onCollisionCallback(ball.body, playerAWall);
+			for (let i = 0; i < MAX_ROLLBACK_TICKS + 2; i++) scene.advanceTick();
+			await new Promise(setImmediate);
+
+			const gameOver = socket.broadcasts.find(
+				(message) => message.type === 'gameOver'
+			);
+			expect(gameOver).toEqual(
+				expect.objectContaining({
+					winner: 'playerB',
+					loser: 'playerA',
+					finalLives: { playerA: 0, playerB: 1 }
+				})
+			);
+		} finally {
+			warning.mockRestore();
+			now.mockRestore();
+		}
 	});
 });
 

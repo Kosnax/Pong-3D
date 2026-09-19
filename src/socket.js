@@ -179,7 +179,7 @@ export default class PongSocketServer extends EventEmitter {
 			this.#latencyPingInterval = null;
 		}
 		this.#wss.clients.forEach((ws) => {
-			ws.close();
+			ws.close(4000, 'Lobby closed');
 		});
 		this.#server.off('upgrade', this.#upgradeHandler);
 	}

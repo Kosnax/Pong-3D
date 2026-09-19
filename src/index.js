@@ -28,6 +28,7 @@ initializeGoalExplosions();
 initializeBallSkins();
 initializePaddleSkins();
 app.get('/map-upload', (req, res) => res.render('map-upload'));
+app.get('/practice', (_req, res) => res.render('practice'));
 
 const server = app.listen(PORT);
 
