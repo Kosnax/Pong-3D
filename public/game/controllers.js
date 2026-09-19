@@ -1,0 +1,142 @@
+import * as MATH from '../physics/math.js';
+import { MobileJoystick } from './mobileJoystick.js';
+
+/*
+------------------
+Controller classes
+------------------
+
+Controllers only need to implement
+`getMoveInputs() -> {Vec3}`
+which identfy a direction to move.
+The caller of this.getMoveInputs() will (and should!) operate as if it were given a unit direction,
+and so the controller _can_ adjust the norm for specific scenarios (say, an AI controller).
+Prefer to return a unit vector, if possible.
+We avoid a base class here because JS only allows for single-inheritance. Therefore, we leave the option
+for a controller to inherit from game object if need be. Otherwise, just implement getMoveInputs.
+*/
+
+export class KeyboardController {
+	constructor(
+		socket,
+		lrudCodes = {
+			left: ['KeyA', 'ArrowLeft'],
+			right: ['KeyD', 'ArrowRight'],
+			up: ['KeyW', 'ArrowUp'],
+			down: ['KeyS', 'ArrowDown']
+		},
+		plane = 'zy',
+		{ touchHost = null, touchHorizontalSign = 1, touchVerticalSign = 1 } = {}
+	) {
+		this.keys = new Set();
+		this.codes = lrudCodes;
+		this.plane = plane;
+		this.touchHorizontalSign = Math.sign(touchHorizontalSign) || 1;
+		this.touchVerticalSign = Math.sign(touchVerticalSign) || 1;
+		this.touchJoystick = touchHost
+			? new MobileJoystick({ host: touchHost })
+			: null;
+
+		this.inputBuffer = [];
+		this.seq = 0;
+		this.useInputBuffer = false;
+		this.inputBufferIdx = 0;
+		this.socket = socket;
+
+		this._onKeyDown = (e) => {
+			if (document.activeElement.tagName === 'INPUT') return;
+			this.keys.add(e.code);
+		};
+
+		this._onKeyUp = (e) => {
+			if (document.activeElement.tagName === 'INPUT') return;
+			this.keys.delete(e.code);
+		};
+
+		this._resetMovement = () => {
+			this.keys.clear();
+			this.touchJoystick?.reset();
+		};
+
+		window.addEventListener('keydown', this._onKeyDown);
+		window.addEventListener('keyup', this._onKeyUp);
+		window.addEventListener('visibilitychange', this._resetMovement);
+		window.addEventListener('blur', this._resetMovement);
+	}
+
+	// Returns orthonormal vectors [ e_1, e_2 ] for movement.
+	// Input should be a string following (x|y|z)(x|y|z).
+	// The first char defines "left/right" movement, the second defines "up/down" movement.
+	static dirFromPlane(plane) {
+		const e = [new MATH.Vec3(), new MATH.Vec3()];
+
+		for (let i = 0; i < 2; i++) {
+			switch (plane[i]) {
+				case 'x':
+					e[i].assign(1, 0, 0);
+					continue;
+				case 'y':
+					e[i].assign(0, 1, 0);
+					continue;
+				case 'z':
+					e[i].assign(0, 0, 1);
+					continue;
+			}
+		}
+
+		return e;
+	}
+
+	getDirection() {
+		if (this.useInputBuffer && this.inputBufferIdx < this.inputBuffer.length) {
+			return new MATH.Vec3(...this.inputBuffer[this.inputBufferIdx].direction);
+		}
+
+		const left = this.codes.left.some((code) => this.keys.has(code));
+		const right = this.codes.right.some((code) => this.keys.has(code));
+		const up = this.codes.up.some((code) => this.keys.has(code));
+		const down = this.codes.down.some((code) => this.keys.has(code));
+
+		const [e1, e2] = KeyboardController.dirFromPlane(this.plane);
+
+		const retDirection = new MATH.Vec3();
+
+		if (left) retDirection.addVec(e1.clone().scale(-1));
+		if (right) retDirection.addVec(e1.clone());
+		if (up) retDirection.addVec(e2.clone());
+		if (down) retDirection.addVec(e2.clone().scale(-1));
+
+		const touchVector = this.touchJoystick?.getVector();
+		if (touchVector) {
+			retDirection.addVec(
+				e1.clone().scale(touchVector.x * this.touchHorizontalSign)
+			);
+			retDirection.addVec(
+				e2.clone().scale(touchVector.y * this.touchVerticalSign)
+			);
+		}
+
+		const magnitude = retDirection.norm();
+		if (magnitude > 1) retDirection.scale(1 / magnitude);
+
+		this.inputBuffer.push({
+			type: 'move',
+			seq: this.seq,
+			direction: [...retDirection]
+		});
+		this.socket?.send(this.inputBuffer.at(-1));
+		this.seq++;
+
+		return retDirection;
+	}
+
+	destroy() {
+		this._resetMovement();
+		window.removeEventListener('keydown', this._onKeyDown);
+		window.removeEventListener('keyup', this._onKeyUp);
+		window.removeEventListener('visibilitychange', this._resetMovement);
+		window.removeEventListener('blur', this._resetMovement);
+		this.touchJoystick?.destroy();
+		this.touchJoystick = null;
+	}
+}

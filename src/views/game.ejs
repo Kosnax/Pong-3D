@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, viewport-fit=cover"
+		/>
+		<title><%= lobbyName %> • 3D Pong</title>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://cdn.jsdelivr.net/npm/three@0.182.0/build/three.module.js",
+					"three/addons/": "https://cdn.jsdelivr.net/npm/three@0.182.0/examples/jsm/"
+				}
+			}
+		</script>
+		<link rel="stylesheet" href="/index.css" />
+		<link rel="stylesheet" href="/game.css" />
+	</head>
+	<body>
+		<div id="chat">
+			<pre id="chat__text"></pre>
+			<input id="chat__box" placeholder="Chat (press Enter)" />
+		</div>
+
+		<div id="waiting">
+			<div id="waiting__card">
+				<p id="waiting__title">Waiting for players...</p>
+				<p id="waiting__code"><strong>Join code:</strong> <%= code %></p>
+				<div id="waiting__players"></div>
+				<div id="waiting__scoreboard" style="display: none"></div>
+				<button id="startButton" class="game-button" disabled>Start Game</button>
+				<button id="waiting__leaveButton" class="game-button game-button--danger" style="display: none">
+					Leave Lobby
+				</button>
+			</div>
+		</div>
+
+		<div id="escape-menu">
+			<div id="escape-menu__card" role="dialog" aria-modal="true" aria-labelledby="escape-menu__title">
+				<h2 id="escape-menu__title">Menu</h2>
+				<div id="escape-menu__actions">
+					<button id="escape-menu__resume" class="game-button">Resume</button>
+					<button id="escape-menu__exit" class="game-button game-button--danger">
+						Exit Lobby
+					</button>
+				</div>
+			</div>
+		</div>
+		<script src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.js"></script>
+		<script type="module" src="/main.js"></script>
+	</body>
+</html>
