@@ -56,8 +56,10 @@ export default class LobbyState {
 		);
 
 		socket.on('client:connect', (clientId) => {
-			// FIXME: No protection for duplicate name joining
-			this.joinLobby(lobbyId, clientId);
+			if (!this.joinLobby(lobbyId, clientId)) {
+				socket.disconnectUser(clientId, 4004, 'Lobby is no longer available');
+				return;
+			}
 
 			socket.broadcast({
 				type: 'chat',
@@ -66,6 +68,7 @@ export default class LobbyState {
 		});
 
 		socket.on('client:disconnect', (clientId) => {
+			if (!this.lobbies.has(lobbyId)) return;
 			socket.broadcast({
 				type: 'chat',
 				content: `[System] ${clientId} left`
@@ -109,15 +112,14 @@ export default class LobbyState {
 
 	joinLobby(lobbyId, clientId) {
 		const lobby = this.lobbies.get(lobbyId);
-		if (!lobby) {
-			throw new Error(`Lobby not found: ${lobbyId}`);
-		}
+		if (!lobby) return false;
 
 		lobby.members.set(clientId, {
 			clientId
 		});
 
 		lobby.emptySince = null;
+		return true;
 	}
 
 	deleteLobby(lobbyId) {
@@ -142,15 +144,14 @@ export default class LobbyState {
 
 	leaveLobby(lobbyId, clientId) {
 		const lobby = this.lobbies.get(lobbyId);
-		if (!lobby) {
-			throw new Error(`Lobby not found: ${lobbyId}`);
-		}
+		if (!lobby) return false;
 
 		lobby.members.delete(clientId);
 
 		if (lobby.members.size === 0) {
 			this.deleteLobby(lobbyId);
 		}
+		return true;
 	}
 
 	cleanup() {

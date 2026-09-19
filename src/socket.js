@@ -53,6 +53,15 @@ export default class PongSocketServer extends EventEmitter {
 		this.#wss.on('connection', (ws, req) => {
 			const username = req.user.display_name;
 			const userId = req.user.id;
+			const existing = this.#wsByUsername.get(username);
+			if (
+				existing &&
+				existing !== ws &&
+				existing.readyState === existing.OPEN
+			) {
+				ws.close(4001, 'User is already connected');
+				return;
+			}
 
 			this.#wsByUsername.set(username, ws);
 			this.#userIdByUsername.set(username, userId);
@@ -92,6 +101,7 @@ export default class PongSocketServer extends EventEmitter {
 			this.emit('client:connect', username);
 
 			ws.on('close', () => {
+				if (this.#wsByUsername.get(username) !== ws) return;
 				this.emit('client:disconnect', username);
 				this.#wsByUsername.delete(username);
 				this.#userIdByUsername.delete(username);

@@ -95,7 +95,10 @@ export default function createUserRouter() {
 
 	router.post('/updateDisplayName', ensureAuth, (req, res) => {
 		const userId = req.user.id;
-		const newName = req.body?.display_name?.trim();
+		const newName =
+			typeof req.body?.display_name === 'string'
+				? req.body.display_name.trim().slice(0, 50)
+				: '';
 
 		if (!newName) {
 			return res
@@ -103,16 +106,38 @@ export default function createUserRouter() {
 				.json({ ok: false, message: 'Display name cannot be empty' });
 		}
 
-		db.run(
-			`UPDATE users SET display_name = ? WHERE id = ?`,
+		db.get(
+			'SELECT id FROM users WHERE display_name = ? AND id <> ? LIMIT 1',
 			[newName, userId],
-			function (err) {
+			(err, existingUser) => {
 				if (err) {
-					console.error('Failed to update display name:', err.message);
+					console.error('Failed to check display name:', err.message);
 					return res.status(500).json({ ok: false, message: 'Database error' });
 				}
-				req.user.display_name = newName;
-				res.json({ ok: true, display_name: newName });
+				if (existingUser) {
+					return res.status(409).json({
+						ok: false,
+						message: 'Display name is already in use'
+					});
+				}
+
+				db.run(
+					'UPDATE users SET display_name = ? WHERE id = ?',
+					[newName, userId],
+					function (updateErr) {
+						if (updateErr) {
+							console.error(
+								'Failed to update display name:',
+								updateErr.message
+							);
+							return res
+								.status(500)
+								.json({ ok: false, message: 'Database error' });
+						}
+						req.user.display_name = newName;
+						res.json({ ok: true, display_name: newName });
+					}
+				);
 			}
 		);
 	});
@@ -156,6 +181,10 @@ export default function createUserRouter() {
 		if (!validType.includes(slot)) {
 			return res.status(400).json({ ok: false, error: 'Invalid type' });
 		}
+		const numericItemId = Number(itemId);
+		if (!Number.isInteger(numericItemId) || numericItemId < 1) {
+			return res.status(400).json({ ok: false, error: 'Invalid item' });
+		}
 
 		const columnMap = {
 			paddle_skin: 'paddle_skin_item_id',
@@ -172,11 +201,28 @@ export default function createUserRouter() {
 				updated_at = datetime('now')
 		`;
 
-		db.run(sql, [userId, itemId], function (err) {
-			if (err)
-				return res.status(500).json({ ok: false, error: 'Database error' });
-			res.json({ ok: true });
-		});
+		db.get(
+			`SELECT i.id
+			 FROM items i
+			 INNER JOIN user_unlocks u ON u.item_id = i.id
+			 WHERE u.user_id = ? AND i.id = ? AND i.kind = ?`,
+			[userId, numericItemId, slot],
+			(err, item) => {
+				if (err)
+					return res.status(500).json({ ok: false, error: 'Database error' });
+				if (!item)
+					return res.status(403).json({
+						ok: false,
+						error: 'Item is not unlocked for this slot'
+					});
+
+				db.run(sql, [userId, numericItemId], function (updateErr) {
+					if (updateErr)
+						return res.status(500).json({ ok: false, error: 'Database error' });
+					res.json({ ok: true });
+				});
+			}
+		);
 	});
 
 	router.get('/stats', ensureAuth, async (req, res) => {

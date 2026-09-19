@@ -22,6 +22,8 @@ export default class ServerScene extends Scene {
 	#inProgress = false;
 	#onGameEnd = null;
 	#gameEnded = false;
+	#ballSkinKey = 0;
+	#servingPlayer = null;
 
 	constructor(socket, lives, onGameEnd) {
 		super(new GameState());
@@ -105,7 +107,8 @@ export default class ServerScene extends Scene {
 						serverTs: Date.now(),
 						respawnEndsAt: this.#respawn?.endAt ?? null,
 						respawnScorer: this.#respawn?.scorer ?? null,
-						matchStarted: this.#matchStarted
+						matchStarted: this.#matchStarted,
+						ballSkinKey: this.#ballSkinKey
 					});
 				});
 			}
@@ -150,6 +153,15 @@ export default class ServerScene extends Scene {
 		if (this.#gameEnded) return;
 
 		if (!this.inProgress) {
+			const player = this.state.players.get(username);
+			if (player) {
+				this.state.players.delete(username);
+				const arena = this.getGameObject('gameArena');
+				for (const body of arena.bodies) {
+					if (body.player === player) delete body.player;
+				}
+			}
+
 			if (username === this.hostUser) {
 				this.#socket.broadcast({
 					type: 'gameCancelled'
@@ -165,16 +177,18 @@ export default class ServerScene extends Scene {
 
 	#updatePaddles() {
 		this.#socket.forEachClient((thisUsername, ws) => {
-			const players = this.state.players.entries().map(([username, player]) => {
-				const paddle = player.paddle;
-				return {
-					key: paddle.key,
-					username: username,
-					elo: player.elo,
-					remote: thisUsername !== username,
-					pos: [...paddle.body.x.data]
-				};
-			});
+			const players = [...this.state.players.entries()].map(
+				([username, player]) => {
+					const paddle = player.paddle;
+					return {
+						key: paddle.key,
+						username: username,
+						elo: player.elo,
+						remote: thisUsername !== username,
+						pos: [...paddle.body.x.data]
+					};
+				}
+			);
 
 			this.#socket.safeSend(ws, {
 				type: 'playerSync',
@@ -190,7 +204,11 @@ export default class ServerScene extends Scene {
 		try {
 			const row = await new Promise((resolve, reject) => {
 				db.get(
-					'SELECT elo FROM users WHERE display_name = ? LIMIT 1',
+					`SELECT u.elo, b.item_key AS ball_skin_key
+						 FROM users u
+						 LEFT JOIN user_equipped ue ON ue.user_id = u.id
+						 LEFT JOIN items b ON b.id = ue.ball_skin_item_id
+						 WHERE u.display_name = ? LIMIT 1`,
 					[player.username],
 					(err, result) => {
 						if (err) reject(err);
@@ -198,13 +216,18 @@ export default class ServerScene extends Scene {
 					}
 				);
 			});
-			const elo = Number(row?.elo);
-			if (!Number.isFinite(elo)) return;
-
 			const currentPlayer = this.state.players.get(player.username);
 			if (currentPlayer !== player) return;
 
-			player.elo = elo;
+			const elo = Number(row?.elo);
+			if (Number.isFinite(elo)) player.elo = elo;
+
+			const ballSkinKey = Number(row?.ball_skin_key);
+			if (Number.isFinite(ballSkinKey)) {
+				player.ballSkinKey = ballSkinKey;
+				if (this.#servingPlayer === player) this.#ballSkinKey = ballSkinKey;
+			}
+
 			this.#updatePaddles();
 		} catch (err) {
 			console.error(`Failed to load elo for ${player.username}:`, err);
@@ -214,6 +237,8 @@ export default class ServerScene extends Scene {
 	#startGame(socket, username, ws, msg) {
 		if (username !== this.hostUser)
 			return { type: 'error', message: 'bruh u not the host' };
+		if (this.#inProgress || this.#gameEnded)
+			return { type: 'error', message: 'Game is already in progress' };
 		if (this.state.players.size < 2)
 			return {
 				type: 'error',
@@ -425,6 +450,10 @@ export default class ServerScene extends Scene {
 	}
 
 	#startServe(playerObj, initial = false) {
+		this.#servingPlayer = playerObj;
+		this.#ballSkinKey = Number.isFinite(playerObj.ballSkinKey)
+			? playerObj.ballSkinKey
+			: 0;
 		this.#ball.setServer(playerObj);
 		this.#respawn = {
 			endAt: Date.now() + RESPAWN_COUNTDOWN_MS,

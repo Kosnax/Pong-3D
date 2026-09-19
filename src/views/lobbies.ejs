@@ -78,6 +78,9 @@
 			const createPrivateButton = document.getElementById('create-private-button');
 			const createLives = document.getElementById('create-lives');
 			const randomLobbyButton = document.getElementById('random-lobby-button');
+			const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({
+				'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+			}[character]));
 
 			let lobbyIsPublic = true;
 			const setLobbyVisibility = (isPublic) => {
@@ -153,7 +156,7 @@
 								lobbies.map((lobby) => `
 									<li class="lobby">
 										<div>
-											<div><strong>${lobby.name} (${lobby.code})</strong></div>
+										<div><strong>${escapeHtml(lobby.name)} (${escapeHtml(lobby.code)})</strong></div>
 											<div>Players: ${lobby.memberCount}</div>
 										</div>
 

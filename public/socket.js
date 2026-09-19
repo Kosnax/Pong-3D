@@ -4,12 +4,18 @@ export default class PongSocketClient {
 	#pingInterval = null;
 	#lastPingTs = null;
 	#lastLatencyMs = null;
+	#testPingHandler = null;
 
 	#handlers = new Map();
 
 	constructor() {
 		this.addHandler('pong', this.#pong.bind(this));
 		this.addHandler('error', this.#error);
+		this.#testPingHandler = (e) => {
+			if (!this.isOpen) return;
+			if (e.key.toLowerCase() === ' ') this.#sendPing();
+		};
+		window.addEventListener('keydown', this.#testPingHandler);
 	}
 
 	connect() {
@@ -58,12 +64,13 @@ export default class PongSocketClient {
 			this.send(reply);
 		};
 
-		this.#ws.onclose = () => {
+		this.#ws.onclose = (event) => {
 			console.log('[ws] closed - will retry');
 			if (this.#pingInterval) {
 				clearInterval(this.#pingInterval);
 				this.#pingInterval = null;
 			}
+			if (event.code === 4001) return;
 
 			this.#reconnectTimer = setTimeout(this.connect.bind(this), 1000);
 		};
@@ -71,15 +78,6 @@ export default class PongSocketClient {
 		this.#ws.onerror = (err) => {
 			console.error('[ws] error:', err);
 		};
-
-		// TODO: testing only
-		window.addEventListener('keydown', (e) => {
-			if (!this.isOpen) return;
-
-			if (e.key.toLowerCase() === ' ') {
-				this.#sendPing();
-			}
-		});
 	}
 
 	get isOpen() {

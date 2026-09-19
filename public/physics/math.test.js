@@ -29,4 +29,16 @@ describe('math helpers', () => {
 		expect(p.y).toBeCloseTo(1, 5);
 		expect(p.z).toBeCloseTo(0, 5);
 	});
+
+	test('approxEquals compares vector components', () => {
+		const v = new Vector(2);
+		v.set(0, 1);
+		v.set(1, 2);
+
+		const close = new Vector(2);
+		close.set(0, 1.0005);
+		close.set(1, 1.9995);
+		expect(v.approxEquals(close)).toBe(true);
+		expect(v.approxEquals(close, 0.0001)).toBe(false);
+	});
 });

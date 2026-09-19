@@ -15,9 +15,19 @@ export default function createLobbyRouter(server, parseSession) {
 	router.post('/api/lobbies', (req, res) => {
 		if (!req.user) return res.sendStatus(401);
 
-		const name = req.body?.name ?? `${req.user.display_name}’s lobby`;
+		const suppliedName = req.body?.name;
+		const name =
+			typeof suppliedName === 'string' && suppliedName.trim().length > 0
+				? suppliedName.trim().slice(0, 100)
+				: `${req.user.display_name}’s lobby`;
 		const lives = req.body?.lives ?? 7;
-		const isPublic = req.body?.isPublic;
+		if (!Number.isInteger(lives) || lives < 1 || lives > 100) {
+			return res.status(400).json({
+				ok: false,
+				message: 'Lives must be an integer between 1 and 100'
+			});
+		}
+		const isPublic = req.body?.isPublic === true;
 		const lobby = lobbyState.createLobby(name, isPublic, lives);
 
 		res.json({ lobby });

@@ -5,6 +5,19 @@ import { GameObjectCustom } from './game/common/GameObject.js';
 import PongSocketClient from './socket.js';
 import { initChat } from './chat.js';
 import { startGoalExplosionDemo } from './game/goalExplosionDemo.js';
+
+function escapeHtml(value) {
+	return String(value ?? '').replace(/[&<>"']/g, (character) => {
+		const entities = {
+			'&': '&amp;',
+			'<': '&lt;',
+			'>': '&gt;',
+			'"': '&quot;',
+			"'": '&#39;'
+		};
+		return entities[character];
+	});
+}
 //Temporary flag to allow viewing of goalExplosionDemo by devs
 if (false) {
 	startGoalExplosionDemo();
@@ -200,18 +213,22 @@ animatedScene.registerGameObject(
 						</thead>
 						<tbody>
 							${Array.from(this.players.keys())
-								.map(
-									(name) => `<tr>
-	<td>${name}</td>
+								.map((name) => {
+									const rating = ratings?.[name];
+									const ratingCells = rating
+										? `<td>${rating.before}</td>
+	<td style="color: ${rating.change >= 0 ? 'lightgreen' : 'red'}">${rating.after} (${rating.change >= 0 ? '+' : ''}${rating.change})</td>`
+										: '<td>—</td><td>—</td>';
+									return `<tr>
+	<td>${escapeHtml(name)}</td>
 	<td>${this.players.get(name).lives}${name === winner ? ' (Winner)' : ''}</td>
-	<td>${ratings[name].before}</td>
-	<td style="color: ${ratings[name].change >= 0 ? 'lightgreen' : 'red'}">${ratings[name].after} (${ratings[name].change >= 0 ? '+' : ''}${ratings[name].change})</td>
-</tr>`
-								)
+	${ratingCells}
+</tr>`;
+								})
 								.join('\n')}
 						</tbody>
 					</table>
-					${animatedScene.unlockedItem ? `<div style="margin-top: 1rem; color: gold"><strong>Item Unlocked:</strong> ${animatedScene.unlockedItem.displayName}</div>` : ''}
+					${animatedScene.unlockedItem ? `<div style="margin-top: 1rem; color: gold"><strong>Item Unlocked:</strong> ${escapeHtml(animatedScene.unlockedItem.displayName)}</div>` : ''}
 				`;
 
 				return;
@@ -240,7 +257,7 @@ animatedScene.registerGameObject(
 					const isHost = name === animatedScene.host;
 					const elo = player.elo;
 					return `<span style="color: ${isHost ? 'yellow' : 'white'}">
-						${name} (${elo})
+						${escapeHtml(name)} (${escapeHtml(elo)})
 					</span>`;
 				})
 				.join('');

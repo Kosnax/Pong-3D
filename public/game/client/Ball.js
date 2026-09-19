@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { BallCommon } from '../common/BallCommon.js';
-import { BALL_SKIN_CONFIGS, BallSkin } from '../shaders/ballSkin.js';
+import { BallSkin } from '../shaders/ballSkin.js';
 
 /**
  * Client-side Ball with THREE.js rendering
@@ -27,6 +27,7 @@ export class Ball extends BallCommon {
 				(identifier !== 'greenWall' && identifier !== 'redWall')
 			)
 				return;
+			if (this.scene?.isReplaying) return;
 
 			const pos = me.x;
 			if (this.#explosionId !== null) {
@@ -37,9 +38,7 @@ export class Ball extends BallCommon {
 				);
 			}
 
-			if (!this.scene?.isReplaying) {
-				this.scene.getGameObject('cameraController')?.addShake(0.5, 1000);
-			}
+			this.scene?.getGameObject('cameraController')?.addShake(0.5, 1000);
 		}).bind(this);
 
 		this.#loadEquipped();
@@ -59,15 +58,11 @@ export class Ball extends BallCommon {
 			if (!response.ok) throw new Error();
 
 			const data = await response.json();
-			const styleIndex = Number.parseInt(data.ball_skin_key, 10);
-			this.setSkinStyle(styleIndex);
-
 			if (data.goal_explosion_key) {
 				this.#explosionId = parseInt(data.goal_explosion_key, 10);
 			}
 		} catch (err) {
 			console.error('Failed to load: ', err);
-			this.setSkinStyle(BALL_SKIN_CONFIGS[0].styleIndex);
 		}
 	}
 
@@ -78,6 +73,13 @@ export class Ball extends BallCommon {
 
 	setSkinStyle(styleIndex) {
 		return this.#skin.setStyle(styleIndex);
+	}
+
+	setServerSkin(styleIndex) {
+		const numericStyleIndex = Number(styleIndex);
+		if (!Number.isFinite(numericStyleIndex)) return;
+		if (this.#skin.styleIndex === numericStyleIndex) return;
+		this.setSkinStyle(numericStyleIndex);
 	}
 
 	get visual() {

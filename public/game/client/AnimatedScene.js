@@ -52,7 +52,7 @@ export class AnimatedScene extends Scene {
 		this.whichPerson = 0;
 
 		this.filpPerson = ((e) => {
-			if (!e.key === 'ArrowRight' && !e.key === 'ArrowLeft') return;
+			if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
 
 			this.whichPerson = (this.whichPerson + 1) % 2;
 
@@ -238,6 +238,7 @@ export class AnimatedScene extends Scene {
 		this.state.physics.importState(msg.physics);
 
 		this.#ball.enabled = msg.active;
+		this.#ball.setServerSkin(msg.ballSkinKey);
 		this.gameOver = msg.gameOver ?? null;
 		this.respawnEndsAt =
 			typeof msg.respawnEndsAt === 'number' ? msg.respawnEndsAt : null;
