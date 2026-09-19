@@ -10,6 +10,7 @@ import { GameState, Player } from '../common/GameState.js';
 import { GoalAnimationSpawner } from '../shaders/goalAnimationSpawner.js';
 import { GameObjectCustom } from '../common/GameObject.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { getSnapshotPredictionSeconds } from './prediction.js';
 
 const FIXED_SIMULATION_STEP = 1 / Constants.SIMULATION_RATE;
 const MAX_FRAME_DELTA = 0.05;
@@ -278,6 +279,10 @@ export class AnimatedScene extends Scene {
 			typeof msg.respawnScorer === 'string' ? msg.respawnScorer : null;
 		this.matchStarted = msg.matchStarted === true;
 		this.#updateServerTimeOffset(msg.serverTs);
+		const snapshotPredictionSeconds = getSnapshotPredictionSeconds(
+			msg.serverTs,
+			this.serverNowMs
+		);
 
 		for (const [username, gameInfo] of Object.entries(msg.gameInfo)) {
 			const player = this.state.players.get(username);
@@ -312,7 +317,43 @@ export class AnimatedScene extends Scene {
 			}
 		}
 
+		this.#predictSnapshotForward(snapshotPredictionSeconds, player);
+
 		this.#smoothRenderCorrections(renderedPaddles, renderedBallPosition);
+	}
+
+	#predictSnapshotForward(duration, localPlayer) {
+		if (duration <= 0) return;
+
+		for (const player of this.state.players.values()) {
+			if (player === localPlayer) continue;
+			this.state.physics.predictBody(player.paddle.body, duration);
+			player.paddle.constrainToBounds();
+		}
+
+		if (!this.#ball.enabled) return;
+
+		// Ball prediction needs collisions, but collision resolution can impart a
+		// tiny impulse to nominally static walls/paddles. Restore every other body
+		// after retaining only the predicted ball state.
+		const worldState = this.state.physics.exportState();
+		const wasReplaying = this.isReplaying;
+		let predictedPosition = null;
+		let predictedVelocity = null;
+		this.isReplaying = true;
+
+		try {
+			this.state.physics.predictBody(this.#ball.body, duration, true);
+			predictedPosition = this.#ball.body.x.clone();
+			predictedVelocity = this.#ball.body.v.clone();
+		} finally {
+			this.state.physics.importState(worldState);
+			if (predictedPosition !== null && predictedVelocity !== null) {
+				this.#ball.body.x.assign(...predictedPosition);
+				this.#ball.body.v.assign(...predictedVelocity);
+			}
+			this.isReplaying = wasReplaying;
+		}
 	}
 
 	#smoothRenderCorrections(renderedPaddles, renderedBallPosition) {

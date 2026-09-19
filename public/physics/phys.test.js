@@ -52,4 +52,20 @@ describe('client prediction', () => {
 		expect(ball.x.x).toBe(0);
 		expect(engine.t).toBe(0);
 	});
+
+	test('projects one remote body without advancing world time', () => {
+		const engine = new PhysicsEngine();
+		const remotePaddle = new RigidBody(1);
+		const ball = new RigidBody(1);
+		remotePaddle.v.x = 4;
+		ball.v.x = 10;
+		engine.registerBody('remotePaddle', remotePaddle);
+		engine.registerBody('ball', ball);
+
+		engine.predictBody(remotePaddle, 0.125);
+
+		expect(remotePaddle.x.x).toBeCloseTo(0.5);
+		expect(ball.x.x).toBe(0);
+		expect(engine.t).toBe(0);
+	});
 });

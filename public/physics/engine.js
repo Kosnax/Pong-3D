@@ -125,7 +125,7 @@ export class PhysicsEngine {
 	}
 
 	// for right now, basic O(N^2) checks, replace later with AABB
-	checkColliders() {
+	checkColliders(onlyBody = null) {
 		const bodies = Array.from(this.bodies.values());
 
 		for (let i = 0; i < bodies.length; i++) {
@@ -133,6 +133,12 @@ export class PhysicsEngine {
 
 			for (let j = i + 1; j < bodies.length; j++) {
 				if (bodies[j].col === undefined) continue;
+				if (
+					onlyBody !== null &&
+					bodies[i] !== onlyBody &&
+					bodies[j] !== onlyBody
+				)
+					continue;
 
 				let i_then_j = true;
 				let result = bodies[i].col.checkCollision(bodies[j].col);
@@ -189,6 +195,22 @@ export class PhysicsEngine {
 
 		body.x.addVec(body.v.clone().scale(dt));
 		body.v.addVec(body.f.clone().scale(dt / body.m));
+	}
+
+	/**
+	 * Project one body forward without applying forces or advancing world time.
+	 * Optional collision checks are restricted to pairs containing this body.
+	 */
+	predictBody(body, duration, checkCollisions = false, maxStep = 1 / 120) {
+		if (!Number.isFinite(duration) || duration <= 0) return;
+
+		const stepCount = Math.max(1, Math.ceil(duration / maxStep));
+		const dt = duration / stepCount;
+
+		for (let i = 0; i < stepCount; i++) {
+			body.x.addVec(body.v.clone().scale(dt));
+			if (checkCollisions) this.checkColliders(body);
+		}
 	}
 
 	registerBody(key, body) {
