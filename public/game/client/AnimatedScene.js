@@ -35,7 +35,6 @@ export class AnimatedScene extends Scene {
 		this.serverTimeOffsetMs = 0;
 		this.unlockedItem = null;
 		this.audio = null;
-		this.reducedEffects = false;
 		this.renderer = new THREE.WebGLRenderer();
 		this.renderer.setSize(window.innerWidth, window.innerHeight);
 		this.renderer.shadowMap.enabled = true;
@@ -396,9 +395,7 @@ export class AnimatedScene extends Scene {
 	}
 
 	#goalScored(msg) {
-		if (!this.reducedEffects) {
-			this.#ball.triggerGoalExplosion(msg.goalExplosionKey, msg.position);
-		}
+		this.#ball.triggerGoalExplosion(msg.goalExplosionKey, msg.position);
 		this.audio?.playGoal();
 	}
 

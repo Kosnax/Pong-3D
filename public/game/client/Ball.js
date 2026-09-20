@@ -110,7 +110,7 @@ export class Ball extends BallCommon {
 
 	#updateTrail() {
 		if (!this.#trail) return;
-		this.#trail.visible = this.enabled && !this.scene?.reducedEffects;
+		this.#trail.visible = this.enabled;
 		if (!this.#trail.visible) {
 			this.#trailInitialized = false;
 			return;

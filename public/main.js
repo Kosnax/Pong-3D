@@ -6,6 +6,7 @@ import PongSocketClient from './socket.js';
 import { initChat } from './chat.js';
 import { startGoalExplosionDemo } from './game/goalExplosionDemo.js';
 import { GameAudio } from './game/audio.js';
+import { WaitingPractice } from './game/client/WaitingPractice.js';
 
 function escapeHtml(value) {
 	return String(value ?? '').replace(/[&<>"']/g, (character) => {
@@ -30,35 +31,9 @@ socket.connect();
 
 const animatedScene = new AnimatedScene(socket);
 window.animatedScene = animatedScene;
-
-function getStoredBoolean(key, fallback = false) {
-	try {
-		const value = localStorage.getItem(key);
-		return value === null ? fallback : value === 'true';
-	} catch {
-		return fallback;
-	}
-}
-
-function setStoredBoolean(key, value) {
-	try {
-		localStorage.setItem(key, String(Boolean(value)));
-	} catch {
-		// Preferences are best-effort when storage is unavailable.
-	}
-}
-
-const prefersReducedMotion = window.matchMedia?.(
-	'(prefers-reduced-motion: reduce)'
-)?.matches;
-const gameAudio = new GameAudio({
-	muted: getStoredBoolean('pongMuted', false)
-});
+const gameAudio = new GameAudio();
 animatedScene.audio = gameAudio;
-animatedScene.reducedEffects = getStoredBoolean(
-	'pongReducedEffects',
-	prefersReducedMotion
-);
+const waitingPractice = new WaitingPractice(animatedScene);
 
 window.addEventListener('pointerdown', () => gameAudio.unlock(), {
 	once: true
@@ -83,6 +58,14 @@ function getReconnectCountdownSeconds() {
 animatedScene.registerGameObject(new GameObjectCustom('socket', { socket }));
 
 animatedScene.registerGameObject(
+	new GameObjectCustom('waitingPractice', {
+		update() {
+			waitingPractice.update();
+		},
+		kill() {
+			waitingPractice.stop();
+		}
+	}),
 	new GameObjectCustom('ambientLight', {
 		visual: new THREE.AmbientLight(0xffffff, 0.2)
 	}),
@@ -118,6 +101,15 @@ animatedScene.registerGameObject(
 			document.body.appendChild(this.self);
 		},
 		update() {
+			this.self.classList.toggle(
+				'hud-score--waiting-practice',
+				waitingPractice.active
+			);
+			if (waitingPractice.active) {
+				this.self.style.display = '';
+				this.self.textContent = waitingPractice.scoreText;
+				return;
+			}
 			const players = [...animatedScene.state.players.values()];
 			if (players.length >= 2) {
 				const localIndex = players.findIndex(
@@ -133,6 +125,20 @@ animatedScene.registerGameObject(
 			} else {
 				this.self.style.display = 'none';
 			}
+		}
+	}),
+	new GameObjectCustom('hudWaiting', {
+		self: document.createElement('div'),
+		init() {
+			this.self.id = 'hud-waiting';
+			this.self.classList.add('hud-overlay');
+			this.self.textContent = 'Waiting for players...';
+			this.self.setAttribute('role', 'status');
+			this.self.setAttribute('aria-live', 'polite');
+			document.body.appendChild(this.self);
+		},
+		update() {
+			this.self.style.display = waitingPractice.active ? '' : 'none';
 		}
 	}),
 	new GameObjectCustom('hudCountdown', {
@@ -218,10 +224,7 @@ animatedScene.registerGameObject(
 		component: document.getElementById('escape-menu'),
 		resumeButton: document.getElementById('escape-menu__resume'),
 		exitButton: document.getElementById('escape-menu__exit'),
-		helpButton: document.getElementById('escape-menu__help'),
 		note: document.getElementById('escape-menu__note'),
-		muteSetting: document.getElementById('setting-mute'),
-		reduceMotionSetting: document.getElementById('setting-reduce-motion'),
 		setOpen(isOpen) {
 			this.note.textContent = animatedScene.gameOver
 				? 'The match has ended. You can review the result or leave the lobby.'
@@ -229,17 +232,9 @@ animatedScene.registerGameObject(
 			this.component.classList.toggle('is-open', isOpen);
 		},
 		init() {
-			this.muteSetting.checked = gameAudio.muted;
-			this.reduceMotionSetting.checked = animatedScene.reducedEffects;
 			window.addEventListener('keydown', (event) => {
 				if (event.key !== 'Escape') return;
 				if (event.target?.tagName === 'INPUT') return;
-				if (
-					document
-						.getElementById('controls-help')
-						?.classList.contains('is-open')
-				)
-					return;
 				this.setOpen(!this.component.classList.contains('is-open'));
 			});
 
@@ -247,72 +242,9 @@ animatedScene.registerGameObject(
 				this.setOpen(false);
 			});
 
-			this.helpButton.addEventListener('click', () => {
-				this.setOpen(false);
-				document.getElementById('controls-help')?.classList.add('is-open');
-			});
-
-			this.muteSetting.addEventListener('change', () => {
-				gameAudio.setMuted(this.muteSetting.checked);
-				setStoredBoolean('pongMuted', this.muteSetting.checked);
-			});
-
-			this.reduceMotionSetting.addEventListener('change', () => {
-				animatedScene.reducedEffects = this.reduceMotionSetting.checked;
-				setStoredBoolean(
-					'pongReducedEffects',
-					this.reduceMotionSetting.checked
-				);
-			});
-
 			this.exitButton.addEventListener('click', () => {
 				window.location.href = '/';
 			});
-		}
-	}),
-	new GameObjectCustom('controlsHelp', {
-		component: document.getElementById('controls-help'),
-		closeButton: document.getElementById('controls-help__close'),
-		hudButton: document.createElement('button'),
-		autoOpened: false,
-		open() {
-			this.component.classList.add('is-open');
-		},
-		close() {
-			this.component.classList.remove('is-open');
-			setStoredBoolean('pongControlsSeen', true);
-		},
-		init() {
-			this.hudButton.id = 'hud-help-button';
-			this.hudButton.type = 'button';
-			this.hudButton.textContent = 'Controls';
-			document.body.appendChild(this.hudButton);
-			this.hudButton.addEventListener('click', () => this.open());
-			this.closeButton.addEventListener('click', () => this.close());
-			window.addEventListener('keydown', (event) => {
-				if (event.target?.tagName === 'INPUT') return;
-				if (event.key === '?' || event.code === 'KeyH') this.open();
-				if (
-					event.key === 'Escape' &&
-					this.component.classList.contains('is-open')
-				) {
-					event.stopImmediatePropagation();
-					this.close();
-				}
-			});
-		},
-		update() {
-			const hasJoined = animatedScene.state.players.size > 0;
-			this.hudButton.style.display = hasJoined ? '' : 'none';
-			if (
-				hasJoined &&
-				!animatedScene.matchStarted &&
-				!this.autoOpened &&
-				!getStoredBoolean('pongControlsSeen', false)
-			) {
-				this.autoOpened = true;
-				this.open();
-			}
 		}
 	}),
 	new GameObjectCustom('spectatorHint', {
@@ -364,6 +296,10 @@ animatedScene.registerGameObject(
 		update(dt) {
 			const isGameOver = animatedScene.gameOver !== null;
 			if (animatedScene.matchStarted && !isGameOver) {
+				this.component.style.display = 'none';
+				return;
+			}
+			if (animatedScene.state.players.size < 2 && !isGameOver) {
 				this.component.style.display = 'none';
 				return;
 			}
@@ -434,8 +370,7 @@ animatedScene.registerGameObject(
 				return;
 			}
 
-			document.getElementById('waiting__title').innerText =
-				'Waiting for players...';
+			document.getElementById('waiting__title').innerText = 'Ready up';
 			this.joinCodeDisplay.style.display = 'block';
 			this.playerListDisplay.style.display = 'block';
 			this.startButton.style.display = 'block';

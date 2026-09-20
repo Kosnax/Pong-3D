@@ -26,7 +26,7 @@
 
 		<div id="waiting">
 			<div id="waiting__card">
-				<p id="waiting__title">Waiting for players...</p>
+				<p id="waiting__title">Ready up</p>
 				<p id="waiting__code"><strong>Join code:</strong> <%= code %></p>
 				<div id="waiting__players"></div>
 				<div id="waiting__scoreboard" style="display: none"></div>
@@ -42,12 +42,7 @@
 			<div id="escape-menu__card" role="dialog" aria-modal="true" aria-labelledby="escape-menu__title">
 				<h2 id="escape-menu__title">Menu</h2>
 				<p id="escape-menu__note" class="menu-note">The match continues while this menu is open.</p>
-				<div class="menu-settings" aria-label="Accessibility settings">
-					<label><input id="setting-mute" type="checkbox" /> Mute sound</label>
-					<label><input id="setting-reduce-motion" type="checkbox" /> Reduce motion and flashes</label>
-				</div>
 				<div id="escape-menu__actions">
-					<button id="escape-menu__help" class="game-button">Controls</button>
 					<button id="escape-menu__resume" class="game-button">Back to Game</button>
 					<button id="escape-menu__exit" class="game-button game-button--danger">
 						Exit Lobby
@@ -56,19 +51,6 @@
 			</div>
 		</div>
 
-		<div id="controls-help" role="dialog" aria-modal="true" aria-labelledby="controls-help__title">
-			<div id="controls-help__card">
-				<p class="eyebrow">HOW TO PLAY</p>
-				<h2 id="controls-help__title">Defend your goal in 3D</h2>
-				<ul>
-					<li><strong>Move:</strong> WASD, arrow keys, or drag anywhere on touch screens.</li>
-					<li><strong>Serve:</strong> move during the countdown to aim the opening shot.</li>
-					<li><strong>Win:</strong> be the last player with lives remaining.</li>
-					<li><strong>Spectate:</strong> use ←/→ to change cameras and drag to orbit.</li>
-				</ul>
-				<button id="controls-help__close" class="game-button">Got It</button>
-			</div>
-		</div>
 		<script src="https://cdn.jsdelivr.net/npm/nipplejs@0.10.2/dist/nipplejs.js"></script>
 		<script type="module" src="/main.js"></script>
 	</body>

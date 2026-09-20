@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { GameObjectBase } from '../common/GameObject.js';
 
 /**
- * Camera controller for following the target paddle, looking at the ball, and allowing for camera-shake behavior. (to make collisions or goals more impactful feeling)
+ * Camera controller for following the target paddle and allowing for camera-shake behavior. (to make collisions or goals more impactful feeling)
  */
 export class CameraController extends GameObjectBase {
 	constructor(key, followTarget, config = {}) {
@@ -13,7 +13,6 @@ export class CameraController extends GameObjectBase {
 		this.offset = config.offset ?? new THREE.Vector3(-6, 3, 0);
 		this.shakeSpeed = config.shakeSpeed ?? 28;
 		this.shakeDecay = config.shakeDecay ?? 6;
-		this.lookResponsiveness = config.lookResponsiveness ?? 7;
 
 		this.shakeTimer = 0;
 		this.shakeIntensity = 0;
@@ -21,9 +20,6 @@ export class CameraController extends GameObjectBase {
 
 		this._shakeOffset = new THREE.Vector3();
 		this._tmpFollowTarget = new THREE.Vector3();
-		this._lookTarget = new THREE.Vector3();
-		this._desiredLookTarget = new THREE.Vector3();
-		this._hasLookTarget = false;
 	}
 
 	init(scene) {
@@ -39,7 +35,6 @@ export class CameraController extends GameObjectBase {
 	}
 
 	addShake(intensity = 0.4, duration = 0.2) {
-		if (this.scene?.reducedEffects) return;
 		this.shakeTimer = Math.max(this.shakeTimer, duration);
 		this.shakeIntensity = Math.max(this.shakeIntensity, intensity);
 	}
@@ -65,28 +60,14 @@ export class CameraController extends GameObjectBase {
 		this._updateShake(dt);
 	}
 
-	render(frameDelta = 1 / 60) {
+	render() {
 		if (!this.followTarget) return;
 
 		CameraController._copyPosition(this.followTarget, this._tmpFollowTarget);
 		this.camera.position.copy(this._tmpFollowTarget).add(this.offset);
 
 		this.camera.position.add(this._shakeOffset);
-
-		const ball = this.scene?.getGameObject('ball');
-		CameraController._copyPosition(
-			ball?.enabled ? ball : { x: 0, y: 0, z: 0 },
-			this._desiredLookTarget
-		);
-		if (!this._hasLookTarget) {
-			this._lookTarget.copy(this._desiredLookTarget);
-			this._hasLookTarget = true;
-		} else {
-			const blend = 1 - Math.exp(-this.lookResponsiveness * frameDelta);
-			this._lookTarget.lerp(this._desiredLookTarget, blend);
-		}
-
-		this.camera.up.set(0, 1, 0);
-		this.camera.lookAt(this._lookTarget);
+		this.camera.rotation.y =
+			this.camera.position.x < 0 ? -Math.PI / 2 : Math.PI / 2;
 	}
 }

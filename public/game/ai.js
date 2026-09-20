@@ -1,7 +1,7 @@
 import * as MATH from '../physics/math.js';
 
 /**
- * Controller-compatible practice opponent for the current physics objects.
+ * Controller-compatible opponent for waiting-lobby practice.
  * It intentionally recenters while the ball is moving away and carries a
  * small, periodically changing aim error so practice remains winnable.
  */
@@ -26,7 +26,10 @@ export class PracticeAIController {
 			this.nextErrorAt = now + 500 + Math.random() * 350;
 		}
 
-		const approaching = this.ball.body.v.x > 0;
+		const paddleIsLeft = this.paddle.body.x.x < 0;
+		const approaching = paddleIsLeft
+			? this.ball.body.v.x < 0
+			: this.ball.body.v.x > 0;
 		const targetY = approaching ? this.ball.body.x.y + this.error.y : 0;
 		const targetZ = approaching ? this.ball.body.x.z + this.error.z : 0;
 		const dy = targetY - this.paddle.body.x.y;
